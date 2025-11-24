@@ -127,39 +127,80 @@ class PacmanEnv(gym.Env):
         return next_state, reward, terminated, truncated, info
     
     def _extract_state(self):
-        """
-        Extract structured state representation
-        Returns: np.array of shape (state_dim,)
+        """Extract structured state representation for RL agent
+        
+        Feature vector layout:
+            [0-1]   Pac-Man position (x, y) normalized
+            [2-17]  Up to 4 ghosts: (x, y, scared_flag, scared_timer) x 4
+            [18]    Remaining food count normalized
+            [19]    Remaining capsules normalized
+            [20]    Nearest food distance normalized
+            [21]    Current score normalized
+            [22]    Original food count normalized
+            [23]    Time fraction (steps/max_steps)
+            [24-29] Reserved/padding
+        
+        Returns:
+            np.ndarray: 30-dimensional feature vector, all values in [0, 1]
         """
         state = []
         
-        # Pac-Man position (normalized)
-        pacman_pos = self.game_state.getPacmanPosition()
+        # Get layout dimensions for normalization
         width = self.layout.width
         height = self.layout.height
+        
+        # Pac-Man position (normalized to [0,1])
+        pacman_pos = self.game_state.getPacmanPosition()
         state.extend([pacman_pos[0] / width, pacman_pos[1] / height])
         
-        # Ghost positions and states
+        # Ghost positions and states (up to 4 ghosts, 4 features each)
         ghost_states = self.game_state.getGhostStates()
-        for ghost in ghost_states:
+        for ghost in ghost_states[:4]:  # first 4 ghosts only
             ghost_pos = ghost.getPosition()
             state.extend([
                 ghost_pos[0] / width,
                 ghost_pos[1] / height,
-                1.0 if ghost.scaredTimer > 0 else 0.0,
-                ghost.scaredTimer / 40.0
+                1.0 if ghost.scaredTimer > 0 else 0.0,  # Binary scared flag
+                ghost.scaredTimer / 40.0  # Timer normalized by SCARED_TIME
             ])
         
-        # Pad if fewer ghosts (assume max 4 ghosts)
-        while len(state) < 2 + 4 * 4:  # 2 pacman + 4 ghosts * 4 features
+        # Pad with zeros if fewer than 4 ghosts
+        for _ in range(4 - len(ghost_states)):
             state.extend([0.0, 0.0, 0.0, 0.0])
         
         # Food remaining
         num_food = self.game_state.getNumFood()
-        state.append(num_food / 100.0)  # Normalize
+        state.append(num_food / 100.0)
         
         # Capsules available
         capsules = self.game_state.getCapsules()
-        state.append(len(capsules) / 4.0)  # Max 4 capsules
+        state.append(len(capsules) / 4.0) # max 4 capsules
         
-        return np.array(state[:30], dtype=np.float32)  # Trim to exact size
+        # Nearest food distance (Manhattan distance)
+        food_positions = self.game_state.getFood().asList()
+        if food_positions:
+            distances = [abs(pacman_pos[0] - fx) + abs(pacman_pos[1] - fy) 
+                        for fx, fy in food_positions]
+            nearest_food_dist = min(distances) / (width + height)
+        else:
+            nearest_food_dist = 0.0
+        state.append(nearest_food_dist)
+        
+        # Current score
+        state.append(self.game_state.getScore() / 1000.0)
+        
+        # Original food count (context for progress tracking)
+        state.append(self.original_food / 100.0 if self.original_food else 0.0)
+        
+        # Time fraction (how much of max_steps used)
+        if self.max_steps is not None and self.max_steps > 0:
+            time_frac = min(self.steps / self.max_steps, 1.0)
+        else:
+            time_frac = 0.0
+        state.append(time_frac)
+        
+        # Padding
+        while len(state) < 30:
+            state.append(0.0)
+        
+        return np.array(state[:30], dtype=np.float32)
