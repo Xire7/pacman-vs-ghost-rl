@@ -78,6 +78,11 @@ class PacmanEnv(gym.Env):
         }
         direction = action_map[action]
         
+        # validate action placeholder (can change this to apply negative reward if we're into that)
+        legal_actions = self.game_state.getLegalActions(0)
+        if direction not in legal_actions:
+            direction = random.choice(legal_actions) if legal_actions else Directions.STOP
+        
         # Pac-Man moves
         self.game_state = self.game_state.generateSuccessor(0, direction)
         
@@ -204,3 +209,13 @@ class PacmanEnv(gym.Env):
             state.append(0.0)
         
         return np.array(state[:30], dtype=np.float32)
+    
+def render(self, mode='human'):
+    if mode == 'human':
+        if hasattr(self, 'display') and self.display:
+            # graphic
+            self.display.update(self.game_state.data)
+        else:
+            # text
+            print(str(self.game_state))
+    return None
