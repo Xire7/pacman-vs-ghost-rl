@@ -45,17 +45,26 @@ class PacmanEnv(gym.Env):
         self.original_food = 0
         
     def reset(self, seed=None, options=None):
-        """Reset environment"""
+        """Reset environment to start a new episode
+        
+        Returns:
+            observation (np.ndarray): Initial state observation
+            info (dict): Empty info dictionary
+        """
         super().reset(seed=seed)
         
-        # Initialize game state
+        # Create new game state
         self.game_state = GameState()
-        self.game_state.initialize(self.layout, numGhostAgents=1)
-        self.current_score = 0
+        self.game_state.initialize(self.layout, numGhostAgents=self.num_ghosts)
         
-        # Extract state
-        state = self._extract_state()
-        return state, {}
+        # Reset episode tracking variables
+        self.current_score = 0.0
+        self.steps = 0
+        self.original_food = self.game_state.getNumFood()  # Store initial food count
+        
+        # Extract initial observation
+        obs = self._extract_state()
+        return obs, {}
     
     def step(self, action):
         """Execute action"""
@@ -72,15 +81,21 @@ class PacmanEnv(gym.Env):
         # Pac-Man moves
         self.game_state = self.game_state.generateSuccessor(0, direction)
         
-        # Ghost moves (if you have a learned ghost)
-        if self.ghost_agent:
-            ghost_action = self.ghost_agent.get_action(self.game_state)
-            self.game_state = self.game_state.generateSuccessor(1, ghost_action)
-        else:
-            # Default: random ghost
-            legal_actions = self.game_state.getLegalActions(1)
-            ghost_action = random.choice(legal_actions)
-            self.game_state = self.game_state.generateSuccessor(1, ghost_action)
+        # Ghost moves (indices 1..N)
+        for ghost_index in range(1, self.game_state.getNumAgents()):
+            if self.game_state.isWin() or self.game_state.isLose():
+                break
+            
+            # Use provided ghost agent or random actions
+            if self.ghost_agents is not None and ghost_index - 1 < len(self.ghost_agents):
+                ghost_agent = self.ghost_agents[ghost_index - 1]
+                ghost_action = ghost_agent.getAction(self.game_state)
+            else:
+                # random ghost action
+                legal_actions = self.game_state.getLegalActions(ghost_index)
+                ghost_action = random.choice(legal_actions) if legal_actions else Directions.STOP
+            
+            self.game_state = self.game_state.generateSuccessor(ghost_index, ghost_action)
         
         # Calculate reward
         new_score = self.game_state.getScore()
