@@ -102,13 +102,29 @@ class PacmanEnv(gym.Env):
         reward = new_score - self.current_score
         self.current_score = new_score
         
-        # Check termination
-        done = self.game_state.isWin() or self.game_state.isLose()
+        # step counter
+        self.steps += 1
+        
+        # natural termination (win or lose)
+        terminated = self.game_state.isWin() or self.game_state.isLose()
+        
+        # timeout (only if not naturally terminated)
+        truncated = False
+        if self.max_steps is not None and self.steps >= self.max_steps:
+            if not terminated:
+                truncated = True
         
         # Extract next state
         next_state = self._extract_state()
         
-        return next_state, reward, done, False, {}
+        # Build info dictionary
+        info = {
+            'raw_score': new_score,
+            'win': self.game_state.isWin(),
+            'lose': self.game_state.isLose(),
+        }
+        
+        return next_state, reward, terminated, truncated, info
     
     def _extract_state(self):
         """
