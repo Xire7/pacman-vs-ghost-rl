@@ -1,5 +1,6 @@
 import gymnasium as gym
 import numpy as np
+import random
 from pacman import GameState, runGames
 from layout import getLayout
 from game import Directions
@@ -9,26 +10,39 @@ class PacmanEnv(gym.Env):
     """
     Gymnasium wrapper for Berkeley Pac-Man
     """
-    def __init__(self, layout_name='mediumGrid', ghost_agent=None):
+    def __init__(self, layout_name='mediumGrid', ghost_agents=None, max_steps=None):
         super().__init__()
         
         self.layout_name = layout_name
         self.layout = getLayout(layout_name)
-        self.ghost_agent = ghost_agent
+        if self.layout is None:
+            raise ValueError(f"Layout '{layout_name}' not found")
         
-        # Define observation space (adjust dimensions based on your state)
+        self.ghost_agents = ghost_agents
+        if ghost_agents is None:
+            # use all ghosts defined in the layout
+            self.num_ghosts = self.layout.getNumGhosts()
+        else:
+            # use the number of ghost agents provided
+            self.num_ghosts = len(ghost_agents)
+        
+        # Define observation space 
         self.observation_space = gym.spaces.Box(
             low=0.0, 
             high=1.0, 
-            shape=(30,),  # Adjust based on your state representation
+            shape=(30,),
             dtype=np.float32
         )
         
         # Define action space: 0=North, 1=South, 2=East, 3=West, 4=Stop
         self.action_space = gym.spaces.Discrete(5)
         
-        self.game_state = None
-        self.current_score = 0
+        # Episode state variables
+        self.game_state = None  # Current GameState object
+        self.current_score = 0  # Track score for computing reward deltas
+        self.steps = 0  # Count actions taken this episode
+        self.max_steps = max_steps  # Maximum steps before truncation (None = no limit)
+        self.original_food = 0
         
     def reset(self, seed=None, options=None):
         """Reset environment"""
