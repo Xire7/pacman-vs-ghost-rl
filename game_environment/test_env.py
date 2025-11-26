@@ -1,6 +1,7 @@
 import sys
 import numpy as np
 
+from game import Directions
 import ghostAgents
 import time
 from gym_env import PacmanEnv
@@ -31,9 +32,27 @@ def test_basic_environment():
     print("Running episode with random actions")
 
     while True:
+        # action = env.action_space.sample()  # if random policy
+        legal_actions = env.game_state.getLegalActions(0)
         action = env.action_space.sample()
-        print(f"Taking action: {action}")
+
+
+        action_to_index = {
+            Directions.NORTH: 0,
+            Directions.SOUTH: 1,
+            Directions.EAST: 2,
+            Directions.WEST: 3,
+            Directions.STOP: 4
+        }
+
+        legal_indices = [action_to_index[a] for a in legal_actions] # preprocessed
+
+        while action not in legal_indices:
+            print(f"Sampled illegal action: {action}, resampling...")
+            action = env.action_space.sample()
+
         obs, reward, terminated, truncated, info = env.step(action)
+        time.sleep(0.2)  # slow down for visibility
 
         total_reward += reward
         step_count += 1

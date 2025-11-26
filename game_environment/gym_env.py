@@ -108,19 +108,17 @@ class PacmanEnv(gym.Env):
         
         # validate action placeholder (can change this to apply negative reward if we're into that)
         legal_actions = self.game_state.getLegalActions(0)
-        print(f"  Action requested: {direction}")
-        print(f"  Legal actions: {legal_actions}")
 
         if direction not in legal_actions:
             old_direction = direction
             direction = random.choice(legal_actions) if legal_actions else Directions.STOP
-            print(f"  ⚠️ {old_direction} was illegal, chose {direction} instead")
 
         
         self.game_state = self.game_state.generatePacmanSuccessor(direction)
 
         if self.display is not None:
             self.display.update(self.game_state.data) # update before ghosts change the state!
+            time.sleep(0.05)  # brief pause for visibility
 
         # Ghost moves (indices 1..N)
         for ghost_index in range(1, self.game_state.getNumAgents()):
@@ -140,6 +138,7 @@ class PacmanEnv(gym.Env):
             
             if self.display is not None:
                 self.display.update(self.game_state.data) # update after each ghost move
+                time.sleep(0.05)
         
         # Calculate reward
         new_score = self.game_state.getScore()
@@ -259,6 +258,7 @@ class PacmanEnv(gym.Env):
             if self.display is not None:
                 # graphic
                 self.display.update(self.game_state.data)
+                time.sleep(0.05)
             else:
                 # text
                 print(str(self.game_state))
