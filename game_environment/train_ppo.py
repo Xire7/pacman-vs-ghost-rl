@@ -199,9 +199,6 @@ def train(args):
     print(f"Ghost Type: {args.ghost_type}")
     print(f"Total Timesteps: {args.timesteps:,}")
     print(f"Parallel Environments: {args.num_envs}")
-    print(f"Log Directory: {log_dir}")
-    print(f"Model Directory: {model_dir}")
-    print("=" * 60)
     
     print("\nChecking environment compatibility...")
     test_env = make_pacman_env(
@@ -244,7 +241,7 @@ def train(args):
         'max_grad_norm': 0.5,
         'verbose': 1,
         'tensorboard_log': log_dir,
-        'device': 'auto',
+        'device': args.device,
     }
     
     layer_sizes = [int(x.strip()) for x in args.net_arch.split(',')]
@@ -440,6 +437,9 @@ def main():
     parser.add_argument('--ent-coef', type=float, default=0.01)
     parser.add_argument('--net-arch', type=str, default='256,256',
                        help='Network architecture (e.g., "256,256" or "512,256,128")')
+    parser.add_argument('--device', type=str, default='cpu',
+                       choices=['cpu', 'cuda', 'auto'],
+                       help='Device to use for training (cpu recommended for MLP)')
     
     parser.add_argument('--eval-freq', type=int, default=10000)
     parser.add_argument('--eval-episodes', type=int, default=10)
