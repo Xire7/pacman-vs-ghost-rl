@@ -4,3 +4,7 @@ venv/
 logs/
 models/
 .github/
+*.zip
+videos/
+
+training_output/

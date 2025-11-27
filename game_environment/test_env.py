@@ -2,6 +2,7 @@ import sys
 import numpy as np
 
 from game import Directions
+from state_extractor import extract_ghost_observation, extract_pacman_observation
 import ghostAgents
 import time
 from gym_env import PacmanEnv
@@ -35,6 +36,13 @@ def test_basic_environment():
         # action = env.action_space.sample()  # if random policy
         legal_actions = env.game_state.getLegalActions(0)
         action = env.action_space.sample()
+
+
+        pacman_obs = extract_pacman_observation(env.game_state, env.original_food)
+        assert pacman_obs.shape == (30,)
+
+        ghost_obs = extract_ghost_observation(env.game_state, ghost_index=1)
+        assert ghost_obs.shape == (9,)
 
 
         action_to_index = {

@@ -1,173 +1,181 @@
+from util import manhattanDistance
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 from game import Directions
-from state_extractor import extract_pacman_state, extract_ghost_state
+from state_extractor import extract_ghost_observation, extract_pacman_observation, get_best_legal_action
 from gym_env import PacmanEnv
-from stable_baselines3 import DQN
 
-class GhostEnv(gym.Env):
+class IndependentGhostEnv(gym.Env):
     """
-    Gym wrapper that lets ONE ghost be controlled by RL.
-    Now includes rendering support.
+    Environment that trains each ghost with its own DQN.
+    
+    Key insight: Instead of one network controlling all ghosts,
+    we have 4 separate networks, each seeing only their own ghost's perspective.
     """
-
-    metadata = {"render_modes": ["human", "text", "rgb_array"]}
-
-    def __init__(self, ghost_index=1, pacman_policy=None, render_mode=None):
+    
+    def __init__(self, ghost_index, layout_name='mediumClassic', 
+                 pacman_policy=None, other_ghost_policies=None, 
+                 render_mode=None, max_steps=500):
+        """
+        Args:
+            ghost_index: Which ghost this environment controls (1, 2, 3, or 4)
+            other_ghost_policies: Dict of {ghost_idx: trained_model} for other ghosts
+        """
         super().__init__()
-
+        
         self.ghost_index = ghost_index
         self.pacman_policy = pacman_policy
-        self.render_mode = render_mode
-
-        # Pac-Man environment handles game state + display
-        # IMPORTANT: Pass render_mode to PacmanEnv
-        self.pacman_env = PacmanEnv(render_mode=render_mode)
-
-        self.num_agents = None
-        self.prev_dist = None
-
-        # ---- OBSERVATION SPACE ----
-        dummy_state, _ = self.pacman_env.reset()
-        dummy_obs = extract_ghost_state(self.pacman_env.game_state, ghost_index)
-        obs_shape = np.array(dummy_obs).shape
-
-        self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=obs_shape,
-            dtype=np.float32
+        self.other_ghost_policies = other_ghost_policies or {}
+        
+        self.pacman_env = PacmanEnv(
+            layout_name=layout_name,
+            ghost_agents=None,
+            max_steps=max_steps,
+            render_mode=render_mode,
+            reward_shaping=False
         )
-
-        # ---- ACTION SPACE ----
-        self.action_space = spaces.Discrete(4)  # N,S,E,W
-
+        
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32
+        )
+        
+        self.action_space = spaces.Discrete(4)
+        
+        self.game_state = None
+        self.steps = 0
+        self.prev_ghost_distances = {}
+    
     def reset(self, *, seed=None, options=None):
+        """Reset and return this ghost's observation."""
         super().reset(seed=seed)
-
-        obs, info = self.pacman_env.reset()
-        state = self.pacman_env.game_state
-        self.num_agents = state.getNumAgents()
-
-        # track distance to Pac-Man
-        pac = state.getPacmanPosition()
-        gh  = state.getGhostPosition(self.ghost_index)
-        self.prev_dist = abs(pac[0] - gh[0]) + abs(pac[1] - gh[1])
-
-        ghost_obs = extract_ghost_state(state, self.ghost_index).astype(np.float32)
-
-        if self.render_mode == "human":
-            self.render()
-
+        
+        obs, info = self.pacman_env.reset(seed=seed)
+        self.game_state = self.pacman_env.game_state
+        self.game_state.data._agentMoved = 0
+        self.steps = 0
+        
+        # Return only THIS ghost's observation
+        ghost_obs = extract_ghost_observation(self.game_state, self.ghost_index)
+        
         return ghost_obs, {}
-
+    
     def step(self, action):
-        # Handle different action formats
-        if isinstance(action, np.ndarray):
-            if action.ndim == 0:
-                action = int(action.item())
-            else:
-                action = int(action[0])
-        else:
-            action = int(action)
-
-        state = self.pacman_env.game_state
-
+        """
+        Execute full turn:
+        1. Pac-Man moves (using policy)
+        2. All ghosts move (this ghost uses action, others use their policies)
+        """
         action_map = {
             0: Directions.NORTH,
             1: Directions.SOUTH,
             2: Directions.EAST,
             3: Directions.WEST
         }
-
-        for agent_index in range(self.num_agents):
-            if state.isWin() or state.isLose():
+        
+        if isinstance(action, np.ndarray):
+            action = int(action.item())
+        
+        # Store this ghost's action
+        my_action = action_map[action]
+        
+        # Execute Pac-Man move
+        legal_pacman = self.game_state.getLegalActions(0)
+        if self.pacman_policy is not None:
+            pacman_obs = extract_pacman_observation(
+                self.game_state, self.pacman_env.original_food
+            )
+            pacman_direction = get_best_legal_action(
+                self.pacman_policy, pacman_obs, legal_pacman
+            )
+        else:
+            pacman_direction = np.random.choice(legal_pacman)
+        
+        self.game_state = self.game_state.generateSuccessor(0, pacman_direction)
+        
+        # Execute all ghost moves
+        for ghost_idx in range(1, self.game_state.getNumAgents()):
+            if self.game_state.isWin() or self.game_state.isLose():
                 break
-
-            legal = state.getLegalActions(agent_index)
-
-            if agent_index == 0:  
-                # PACMAN
-                if self.pacman_policy is None:
-                    chosen = np.random.choice(legal)
-                else:
-                    # Use PacmanEnv's 30-dim observation
-                    temp_state = self.pacman_env.game_state
-                    self.pacman_env.game_state = state
-                    pac_obs = self.pacman_env._extract_observation()
-                    self.pacman_env.game_state = temp_state
-                    
-                    a, _ = self.pacman_policy.predict(pac_obs, deterministic=False)
-                    pac_map = {
-                        0: Directions.NORTH,
-                        1: Directions.SOUTH,
-                        2: Directions.EAST,
-                        3: Directions.WEST,
-                        4: Directions.STOP
-                    }
-                    chosen = pac_map[int(a)]
-                    if chosen not in legal:
-                        chosen = np.random.choice(legal)
-
-            elif agent_index == self.ghost_index:
-                # RL Ghost
-                chosen = action_map[action]
-                if chosen not in legal:
-                    chosen = np.random.choice(legal)
-
+            
+            legal_ghost = self.game_state.getLegalActions(ghost_idx)
+            
+            if ghost_idx == self.ghost_index:
+                # ✅ This is OUR ghost - use the action we're training
+                ghost_direction = my_action
+                if ghost_direction not in legal_ghost:
+                    ghost_direction = np.random.choice(legal_ghost)
+            
+            elif ghost_idx in self.other_ghost_policies:
+                # ✅ Other ghost has a trained policy
+                other_obs = extract_ghost_observation(self.game_state, ghost_idx)
+                other_action, _ = self.other_ghost_policies[ghost_idx].predict(
+                    other_obs, deterministic=False
+                )
+                other_action_map = {0: Directions.NORTH, 1: Directions.SOUTH,
+                                   2: Directions.EAST, 3: Directions.WEST}
+                ghost_direction = other_action_map[int(other_action)]
+                if ghost_direction not in legal_ghost:
+                    ghost_direction = np.random.choice(legal_ghost)
+            
             else:
-                # Other ghosts
-                chosen = np.random.choice(legal)
-
-            state = state.generateSuccessor(agent_index, chosen)
-
-        # Update game state ONCE after all agents move
-        self.pacman_env.game_state = state
-
-        # ------- Reward shaping -------
-        pac = state.getPacmanPosition()
-        gh  = state.getGhostPosition(self.ghost_index)
-        dist = abs(pac[0] - gh[0]) + abs(pac[1] - gh[1])
-
-        reward = 0.0
-        if state.isLose():
-            reward += 100.0  # caught pacman
-
-        if self.prev_dist is not None:
-            reward += (self.prev_dist - dist) * 0.5
-
-        reward -= 0.1  # tiny time penalty
-
-        self.prev_dist = dist
-
-        terminated = state.isWin() or state.isLose()
-        truncated = False
-
-        next_obs = extract_ghost_state(state, self.ghost_index).astype(np.float32)
-
-        # Render ONLY at the end of the full turn
-        if self.render_mode == "human":
-            self.render()
-
-        return next_obs, reward, terminated, truncated, {}
-
-    def render(self):
-        """Render the current state via PacmanEnv's display."""
-        if self.render_mode == 'human':
-            # Use PacmanEnv's render method which handles the display
-            if self.pacman_env.display is not None:
-                try:
-                    # Make sure game_state.data is properly set
-                    import graphicsUtils
-                    self.pacman_env.display.update(self.pacman_env.game_state.data)
-                    graphicsUtils.refresh()
-                except Exception as e:
-                    # Fallback to text if display fails
-                    print(f"Display error: {e}")
-                    print(str(self.pacman_env.game_state))
-        elif self.render_mode == 'text':
-            print(str(self.pacman_env.game_state))
+                ghost_direction = np.random.choice(legal_ghost)
+            
+            self.game_state = self.game_state.generateSuccessor(ghost_idx, ghost_direction)
+        
+        reward = self._calculate_individual_ghost_reward()
+        
+        terminated = self.game_state.isWin() or self.game_state.isLose()
+        truncated = self.steps >= self.pacman_env.max_steps and not terminated
+        
+        self.steps += 1
+        
+        if not terminated and not truncated:
+            ghost_obs = extract_ghost_observation(self.game_state, self.ghost_index)
+        else:
+            ghost_obs = np.zeros(9, dtype=np.float32)
+        
+        info = {
+            'ghost_won': self.game_state.isLose(),
+            'pacman_won': self.game_state.isWin(),
+            'score': self.game_state.getScore()
+        }
+        
+        return ghost_obs, reward, terminated, truncated, info
     
-    def close(self):
-        self.pacman_env.close()
+    def _calculate_individual_ghost_reward(self):
+        """
+        Reward for THIS ghost specifically.
+        
+        Encourages individual contribution while maintaining team goal.
+        """
+        reward = 0.0
+        
+        # Team rewards (all ghosts get these)
+        if self.game_state.isLose():
+            reward += 100.0  # Caught Pac-Man!
+        elif self.game_state.isWin():
+            reward -= 50.0   # Pac-Man won
+        
+        # Individual reward: proximity to Pac-Man
+        pacman_pos = self.game_state.getPacmanPosition()
+        ghost_pos = self.game_state.getGhostPosition(self.ghost_index)
+        ghost_state = self.game_state.getGhostState(self.ghost_index)
+        
+        dist = manhattanDistance(pacman_pos, ghost_pos)
+        
+        # Reward for being close (if not scared)
+        if ghost_state.scaredTimer == 0:
+            if dist <= 1:
+                reward += 10.0  # Very close!
+            elif dist <= 3:
+                reward += 2.0   # Approaching
+            else:
+                reward -= 0.1 * dist  # Too far
+        else:
+            # If scared, reward for staying away
+            reward += 0.05 * dist
+        
+        reward -= 0.01  # Small time penalty
+        
+        return reward

@@ -34,6 +34,8 @@ import random
 import io
 import functools
 
+import numpy as np
+
 class Experiences(object):
     def __init__(self, test_name):
         self._idx = -1
