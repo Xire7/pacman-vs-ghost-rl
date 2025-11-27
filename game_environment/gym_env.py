@@ -3,6 +3,7 @@ Gymnasium wrapper for Berkeley Pac-Man environment.
 Compatible with stable-baselines3 for PPO training.
 """
 
+from state_extractor import extract_pacman_observation, extract_ghost_observation, get_best_legal_action
 import gymnasium as gym
 import numpy as np
 import random
@@ -17,6 +18,8 @@ import graphicsUtils
 class PacmanEnv(gym.Env):
     """
     Gymnasium wrapper for Berkeley Pac-Man.
+
+    Now supports trained ghost policies for adversarial training.
     
     Observation Space: 30-dimensional Box[-1, 1]
     Action Space: Discrete(5) - NORTH, SOUTH, EAST, WEST, STOP
@@ -35,7 +38,7 @@ class PacmanEnv(gym.Env):
     DIRECTION_TO_ACTION = {v: k for k, v in ACTION_MAP.items()}
     
     def __init__(self, layout_name='mediumGrid', ghost_agents=None, max_steps=500, 
-                 render_mode=None, reward_shaping=True):
+                 render_mode=None, reward_shaping=True, ghost_policies=None):
         super().__init__()
         
         self.layout_name = layout_name
@@ -46,6 +49,8 @@ class PacmanEnv(gym.Env):
         self._ghost_agent_config = ghost_agents
         self.num_ghosts = len(ghost_agents) if ghost_agents else self.layout.getNumGhosts()
         
+        self.ghost_policies = ghost_policies # Dict of {ghost idx: DQN model}
+
         self.observation_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(30,), dtype=np.float32
         )
@@ -64,7 +69,7 @@ class PacmanEnv(gym.Env):
         self.render_mode = render_mode
         self.display = None
         self._display_initialized = False
-        
+
     def _create_ghost_agents(self):
         if self._ghost_agent_config is not None:
             return [type(g)(g.index) for g in self._ghost_agent_config]
@@ -98,7 +103,7 @@ class PacmanEnv(gym.Env):
             self.display.initialize(self.game_state.data)
             graphicsUtils.refresh()
         
-        obs = self._extract_observation()
+        obs = extract_pacman_observation(self.game_state, self.original_food).astype(np.float32)
         info = {
             'raw_score': 0,
             'food_remaining': self.original_food,
@@ -128,17 +133,33 @@ class PacmanEnv(gym.Env):
             self.display.update(self.game_state.data)
             graphicsUtils.refresh()
         
+        # ghost move
         for ghost_idx in range(1, self.game_state.getNumAgents()):
             if self.game_state.isWin() or self.game_state.isLose():
                 break
-            
-            if ghost_idx - 1 < len(self.ghost_agents):
-                ghost_action = self.ghost_agents[ghost_idx - 1].getAction(self.game_state)
+
+            legal_ghost = self.game_state.getLegalActions(ghost_idx)
+
+            if self.ghost_policies is not None and ghost_idx in self.ghost_policies:
+                ghost_obs = extract_ghost_observation(self.game_state, ghost_idx)
+                
+                ghost_direction = get_best_legal_action(
+                    policy=self.ghost_policies[ghost_idx],
+                    obs=ghost_obs,
+                    legal_actions=legal_ghost
+                )
+
+            elif self._ghost_agent_config and ghost_idx - 1 < len(self.ghost_agents):
+                # use scripted behavior (original behavior)
+                ghost_direction = self.ghost_agents[ghost_idx - 1].getAction(self.game_state)
+
+                if ghost_direction not in legal_ghost:
+                    ghost_direction = random.choice(legal_ghost) if legal_ghost else Directions.STOP
             else:
-                legal = self.game_state.getLegalActions(ghost_idx)
-                ghost_action = random.choice(legal) if legal else Directions.STOP
+                #random ghost (fallback)
+                ghost_direction = random.choice(legal_ghost) if legal_ghost else Directions.STOP
             
-            self.game_state = self.game_state.generateSuccessor(ghost_idx, ghost_action)
+            self.game_state = self.game_state.generateSuccessor(ghost_idx, ghost_direction)
             
             if self.render_mode == 'human' and self.display is not None:
                 self.display.update(self.game_state.data)
@@ -160,7 +181,7 @@ class PacmanEnv(gym.Env):
         self.prev_capsule_count = len(self.game_state.getCapsules())
         self.prev_pacman_pos = self.game_state.getPacmanPosition()
         
-        obs = self._extract_observation()
+        obs = extract_pacman_observation(self.game_state, self.original_food).astype(np.float32)
         info = {
             'raw_score': new_score,
             'win': self.game_state.isWin(),
@@ -216,116 +237,6 @@ class PacmanEnv(gym.Env):
                         shaped_reward -= 0.05
         
         return shaped_reward
-    
-    def _extract_observation(self):
-        width = self.layout.width
-        height = self.layout.height
-        max_dist = width + height
-        
-        features = []
-        
-        # Pac-Man position (2)
-        pacman_pos = self.game_state.getPacmanPosition()
-        features.append(2.0 * pacman_pos[0] / (width - 1) - 1.0)
-        features.append(2.0 * pacman_pos[1] / (height - 1) - 1.0)
-        
-        # Pac-Man direction (2)
-        pacman_state = self.game_state.data.agentStates[0]
-        direction = pacman_state.getDirection()
-        dx, dy = Actions.directionToVector(direction)
-        features.append(float(dx))
-        features.append(float(dy))
-        
-        # Ghost info (16 = 4 ghosts × 4 features)
-        ghost_states = self.game_state.getGhostStates()
-        for i in range(4):
-            if i < len(ghost_states):
-                ghost = ghost_states[i]
-                ghost_pos = ghost.getPosition()
-                features.append(2.0 * ghost_pos[0] / (width - 1) - 1.0)
-                features.append(2.0 * ghost_pos[1] / (height - 1) - 1.0)
-                features.append(-1.0 if ghost.scaredTimer > 0 else 1.0)
-                features.append(ghost.scaredTimer / 40.0)
-            else:
-                features.extend([0.0, 0.0, 0.0, 0.0])
-        
-        # Food info (3)
-        food_positions = self.game_state.getFood().asList()
-        num_food = len(food_positions)
-        
-        if self.original_food > 0:
-            features.append(2.0 * num_food / self.original_food - 1.0)
-        else:
-            features.append(-1.0)
-        
-        capsules = self.game_state.getCapsules()
-        features.append(len(capsules) / 4.0 * 2.0 - 1.0)
-        
-        if food_positions:
-            distances = [abs(pacman_pos[0] - fx) + abs(pacman_pos[1] - fy) 
-                        for fx, fy in food_positions]
-            nearest_food_dist = min(distances)
-            features.append(1.0 - 2.0 * nearest_food_dist / max_dist)
-        else:
-            features.append(1.0)
-        
-        # Ghost distances (2)
-        dangerous_ghost_dists = []
-        scared_ghost_dists = []
-        for ghost in ghost_states:
-            ghost_pos = ghost.getPosition()
-            dist = abs(pacman_pos[0] - ghost_pos[0]) + abs(pacman_pos[1] - ghost_pos[1])
-            if ghost.scaredTimer > 0:
-                scared_ghost_dists.append(dist)
-            else:
-                dangerous_ghost_dists.append(dist)
-        
-        if dangerous_ghost_dists:
-            nearest_danger = min(dangerous_ghost_dists)
-            features.append(2.0 * nearest_danger / max_dist - 1.0)
-        else:
-            features.append(1.0)
-        
-        if scared_ghost_dists:
-            nearest_scared = min(scared_ghost_dists)
-            features.append(1.0 - 2.0 * nearest_scared / max_dist)
-        else:
-            features.append(-1.0)
-        
-        # Score (1)
-        score = self.game_state.getScore()
-        normalized_score = np.clip(score / 500.0, -1.0, 1.0)
-        features.append(normalized_score)
-        
-        # Direction to nearest food (4)
-        if food_positions:
-            distances_with_pos = [(abs(pacman_pos[0] - fx) + abs(pacman_pos[1] - fy), (fx, fy))
-                                  for fx, fy in food_positions]
-            _, nearest_food_pos = min(distances_with_pos, key=lambda x: x[0])
-            
-            dx = nearest_food_pos[0] - pacman_pos[0]
-            dy = nearest_food_pos[1] - pacman_pos[1]
-            
-            mag = abs(dx) + abs(dy)
-            if mag > 0:
-                features.append(dx / mag)
-                features.append(dy / mag)
-            else:
-                features.append(0.0)
-                features.append(0.0)
-            
-            features.append(1.0)
-            features.append(1.0)
-        else:
-            features.extend([0.0, 0.0, -1.0, -1.0])
-        
-        while len(features) < 30:
-            features.append(0.0)
-        
-        obs = np.array(features[:30], dtype=np.float32)
-        obs = np.clip(obs, -1.0, 1.0)
-        
-        return obs
     
     def render(self):
         if self.render_mode == 'human':
