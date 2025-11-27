@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from game import Actions, Directions
 from util import manhattanDistance
 
@@ -189,15 +190,19 @@ def get_best_legal_action(policy, obs, legal_actions):
     # Get action probabilities or Q-values from the policy
     if hasattr(policy.policy, 'get_distribution'):
         # For PPO (stochastic policies)
-        with policy.policy.set_training_mode(False):
-            obs_tensor = policy.policy.obs_to_tensor(obs)[0]
+        policy.policy.set_training_mode(False)
+        obs_tensor = policy.policy.obs_to_tensor(obs)[0]
+           
+        with torch.no_grad():
             distribution = policy.policy.get_distribution(obs_tensor)
             action_probs = distribution.distribution.probs.detach().cpu().numpy()[0]
     else:
         # For DQN (Q-values)
         obs_tensor = policy.policy.obs_to_tensor(obs)[0]
-        q_values = policy.q_net(obs_tensor).detach().cpu().numpy()[0]
-        action_probs = q_values  # Higher Q-value = better action
+
+        with torch.no_grad():
+            q_values = policy.q_net(obs_tensor).detach().cpu().numpy()[0]
+            action_probs = q_values  # Higher Q-value = better action
     
     # Create mask for legal actions
     legal_indices = [idx for idx, direction in action_map.items() 
@@ -213,5 +218,9 @@ def get_best_legal_action(policy, obs, legal_actions):
     
     # Choose action with highest probability/Q-value among legal actions
     best_action_idx = np.argmax(masked_probs)
+
+    if best_action_idx not in legal_indices:
+        print(f"Warning: best action {best_action_idx} not in legal indices {legal_indices}")
+        best_action_idx = legal_indices[np.argmax([action_probs[i] for i in legal_indices])]
     
     return action_map[best_action_idx]

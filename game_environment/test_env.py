@@ -6,6 +6,20 @@ from state_extractor import extract_ghost_observation, extract_pacman_observatio
 import ghostAgents
 import time
 from gym_env import PacmanEnv
+from stable_baselines3 import DQN, PPO
+from state_extractor import get_best_legal_action
+from game import Directions
+import numpy as np
+
+def test_load_model():
+    model = DQN.load("training_output\\run_20251127_055509\\models\\ghost_1_v1")
+
+    obs = np.random.randn(9)
+    legal_actions = [Directions.NORTH, Directions.SOUTH, Directions.EAST]
+    action = get_best_legal_action(model, obs, legal_actions)
+    print(f"Selected action: {action}")
+    return
+
 
 def test_basic_environment():
     """Test the gym environment with random actions"""
@@ -83,4 +97,4 @@ def test_basic_environment():
 
 
 if __name__ == "__main__":
-    test_basic_environment()
+    test_load_model()

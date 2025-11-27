@@ -99,9 +99,32 @@ def train_ghost_sequential(
     
     if os.path.exists(prev_model_path + ".zip"):
         print(f"Loading Ghost {ghost_idx} v{prev_version} for continued training...")
-        model = DQN.load(prev_model_path, env=env)
-        timesteps = refinement_timesteps
-        print(f"Refining for {timesteps:,} timesteps")
+
+        try:
+            model = DQN.load(prev_model_path, env=env)
+            model.learning_rate = 1e-3
+            model.exploration_rate = 0.1
+            timesteps = refinement_timesteps
+            print(f"Refining for {timesteps:,} timesteps")
+        except Exception as e:
+            print("Failed to load model, creating new model instead")
+            
+            # Fallback to new model
+            model = DQN(
+                "MlpPolicy",
+                env,
+                learning_rate=1e-3,
+                buffer_size=50000,
+                learning_starts=1000,
+                batch_size=64,
+                gamma=0.99,
+                target_update_interval=1000,
+                exploration_fraction=0.3,
+                exploration_final_eps=0.05,
+                verbose=1,
+                tensorboard_log=os.path.join(dirs['logs'], f"ghost_{ghost_idx}")
+            )
+            timesteps = initial_timesteps
     else:
         print(f"Creating new DQN model for Ghost {ghost_idx}...")
         model = DQN(
@@ -192,9 +215,28 @@ def train_pacman(
     
     if os.path.exists(prev_model_path + ".zip"):
         print(f"Loading Pac-Man v{prev_version} for continued training...")
-        model = PPO.load(prev_model_path, env=env)
-        timesteps = refinement_timesteps
-        print(f"Refining for {timesteps:,} timesteps")
+
+        try:
+            model = PPO.load(prev_model_path, env=env)
+            timesteps = refinement_timesteps
+            print(f"Refining for {timesteps:,} timesteps")
+        except Exception as e:
+            print(f"Failed to load model: {e}, creating new model instead")
+            model = PPO(
+                "MlpPolicy",
+                env,
+                learning_rate=3e-4,
+                n_steps=2048,
+                batch_size=64,
+                n_epochs=10,
+                gamma=0.99,
+                gae_lambda=0.95,
+                clip_range=0.2,
+                ent_coef=0.01,
+                verbose=1,
+                tensorboard_log=os.path.join(dirs['logs'], "pacman")
+            )
+            timesteps = initial_timesteps
     else:
         print(f"Creating new PPO model for Pac-Man...")
         model = PPO(
