@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Visualize and Record trained Pac-Man vs Ghosts agents
 
@@ -68,9 +67,9 @@ def visualize_game(
         ghost_path = os.path.join(ghost_model_dir, f"ghost_{i}_v{ghost_version}")
         if os.path.exists(ghost_path + ".zip"):
             ghost_models[i] = DQN.load(ghost_path)
-            print(f"✓ Loaded Ghost {i}: {ghost_path}")
+            print(f"Loaded Ghost {i}: {ghost_path}")
         else:
-            print(f"⚠️  Ghost {i} not found: {ghost_path}")
+            print(f"Ghost {i} not found: {ghost_path}")
     
     if len(ghost_models) == 0:
         print("Error: No ghost models loaded!")
@@ -80,11 +79,11 @@ def visualize_game(
     if record_video:
         try:
             import imageio
-            print(f"\n📹 Video recording enabled")
+            print(f"\nVideo recording enabled")
             print(f"   Output folder: {video_folder}")
             print(f"   FPS: {video_fps}")
         except ImportError:
-            print("\n⚠️  Video recording requires imageio[ffmpeg]")
+            print("\nVideo recording requires imageio[ffmpeg]")
             print("   Installing: pip install imageio[ffmpeg]")
             import subprocess
             subprocess.check_call(['pip', 'install', 'imageio[ffmpeg]'])
@@ -159,7 +158,7 @@ def visualize_game(
                 for i, frame in enumerate(frames):
                     f.write(f"Step {i+1}:\n{frame}\n\n")
             
-            print(f"📹 Saved ASCII replay: {video_path}")
+            print(f"Saved ASCII replay: {video_path}")
         
         # Episode summary
         if info.get('win', False):
@@ -212,7 +211,7 @@ def visualize_game(
             json.dump(all_stats, f, indent=2)
         print(f"\n✓ Statistics saved to: {stats_path}")
     
-    print("\nVisualization complete! 🎉")
+    print("\nVisualization complete!")
     
     return all_stats
 

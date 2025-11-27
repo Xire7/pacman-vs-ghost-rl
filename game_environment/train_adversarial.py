@@ -21,7 +21,6 @@ import argparse
 import os
 import numpy as np
 from datetime import datetime
-from visualize_agents import record_round_video
 from stable_baselines3 import PPO, DQN
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from ghost_agent import IndependentGhostEnv
@@ -235,7 +234,7 @@ def train_pacman(
     # Save final model
     model_path = os.path.join(dirs['models'], f"pacman_v{version}")
     model.save(model_path)
-    print(f"✓ Pac-Man v{version} saved to {model_path}")
+    print(f"Pac-Man v{version} saved to {model_path}")
     
     env.close()
     
@@ -440,14 +439,6 @@ def train_adversarial_rl(
             )
             
             print(f"\nPac-Man trained to v{version}")
-
-            record_round_video(
-                round_num=round_num,
-                pacman_model=pacman_model,
-                ghost_models=ghost_models,
-                layout_name=layout_name,
-                dirs=dirs
-            ) # After pacman training, we get a demo video for the round on this pacman v the ghost
         
         # Evaluate periodically
         if round_num % eval_frequency == 0 and pacman_model is not None:
