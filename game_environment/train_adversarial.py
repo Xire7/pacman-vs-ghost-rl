@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Iterative Freeze Training Script for Pac-Man vs Ghosts
 
@@ -279,13 +278,13 @@ def evaluate_matchup(pacman_model, ghost_models, layout_name, n_episodes=20):
         
         if info.get('win', False):
             pacman_wins += 1
-            result = "🟡 Pac-Man"
+            result = "Pac-Man"
         elif info.get('lose', False):
             ghost_wins += 1
-            result = "👻 Ghosts"
+            result = "Ghosts"
         else:
             timeouts += 1
-            result = "⏱️  Timeout"
+            result = "Timeout"
         
         scores.append(info.get('raw_score', 0))
         episode_lengths.append(steps)
