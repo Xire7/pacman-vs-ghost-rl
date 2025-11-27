@@ -1,3 +1,6 @@
 __pycache__/
 venv/
 *.pdf
+logs/
+models/
+.github/
