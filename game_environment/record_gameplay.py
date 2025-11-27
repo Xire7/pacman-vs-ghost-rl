@@ -44,12 +44,12 @@ def record_gameplay_video(
         from PIL import ImageGrab
         import imageio
     except ImportError:
-        print("📦 Installing dependencies...")
+        print("Installing dependencies...")
         import subprocess
         subprocess.check_call(['pip', 'install', 'pillow', 'imageio[ffmpeg]'])
         from PIL import ImageGrab
         import imageio
-        print("✓ Dependencies installed!\n")
+        print("Dependencies installed!\n")
     
     print(f"\n{'='*60}")
     print(f"Recording Gameplay Video")
@@ -64,7 +64,7 @@ def record_gameplay_video(
         ghost_path = os.path.join(ghost_model_dir, f"ghost_{i}_v{ghost_version}")
         if os.path.exists(ghost_path + ".zip"):
             ghost_models[i] = DQN.load(ghost_path)
-            print(f"  ✓ Ghost {i}")
+            print(f"Ghost {i}")
     
     # Create environment with rendering
     env = PacmanEnv(
@@ -104,7 +104,7 @@ def record_gameplay_video(
             padding = 5
             bbox = (x - padding, y - padding, x + w + padding, y + h + padding)
             
-            print(f"✓ Capturing region: {w}x{h} at ({x}, {y})")
+            print(f"Capturing region: {w}x{h} at ({x}, {y})")
             break
         except Exception as e:
             if attempt < 2:
@@ -153,7 +153,7 @@ def record_gameplay_video(
     
     env.close()
     
-    print(f"\n✓ Captured {len(frames)} frames")
+    print(f"\nCaptured {len(frames)} frames")
     
     # Save video
     if len(frames) == 0:
@@ -175,7 +175,7 @@ def record_gameplay_video(
             # Save as MP4
             imageio.mimsave(output_path, frames, fps=fps, codec='libx264')
         
-        print(f"✓ Video saved: {output_path}")
+        print(f"Video saved: {output_path}")
         print(f"  Duration: {len(frames) / fps:.1f} seconds")
         print(f"  Steps recorded: {step_count}")
         
@@ -186,7 +186,7 @@ def record_gameplay_video(
             elif final_info.get('lose', False):
                 print(f"\n GHOSTS WIN! Score: {final_info.get('raw_score', 0):.0f}")
         else:
-            print(f"\n⏱Recording stopped at {step_count} steps")
+            print(f"\nRecording stopped at {step_count} steps")
         
         return output_path
     
