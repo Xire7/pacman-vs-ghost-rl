@@ -1,309 +1,403 @@
 """
-Gymnasium wrapper for Berkeley Pac-Man environment.
-Compatible with stable-baselines3 for PPO training.
+Gymnasium-compatible Pacman environment with action masking support.
+Uses MaskablePPO from sb3-contrib for valid action enforcement.
 """
 
-from state_extractor import extract_pacman_observation, extract_ghost_observation, get_best_legal_action
 import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
-import random
-from pacman import GameState
+from typing import Optional, Tuple, Dict, Any, List
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from pacman import ClassicGameRules, SCARED_TIME
+from game import Directions, Actions, Configuration, AgentState, GameStateData, Game
 from layout import getLayout
-from game import Directions, Actions
-import ghostAgents
-import graphicsDisplay
-import graphicsUtils
+from ghostAgents import RandomGhost, DirectionalGhost
+from graphicsDisplay import PacmanGraphics
+from textDisplay import NullGraphics
 
 
 class PacmanEnv(gym.Env):
     """
-    Gymnasium wrapper for Berkeley Pac-Man.
-
-    Now supports trained ghost policies for adversarial training.
+    Gymnasium environment for Pacman with action masking.
     
-    Observation Space: 30-dimensional Box[-1, 1]
-    Action Space: Discrete(5) - NORTH, SOUTH, EAST, WEST, STOP
+    Observation: 45-dimensional vector with normalized features
+    Actions: 0=North, 1=South, 2=East, 3=West, 4=Stop
     """
     
-    metadata = {"render_modes": ["human", "text", "rgb_array"], "render_fps": 10}
+    metadata = {"render_modes": ["human", "rgb_array", None], "render_fps": 15}
     
-    ACTION_MAP = {
-        0: Directions.NORTH,
-        1: Directions.SOUTH,
-        2: Directions.EAST,
-        3: Directions.WEST,
-        4: Directions.STOP
-    }
+    # Action mapping
+    ACTIONS = [Directions.NORTH, Directions.SOUTH, Directions.EAST, Directions.WEST, Directions.STOP]
+    ACTION_TO_INDEX = {d: i for i, d in enumerate(ACTIONS)}
     
-    DIRECTION_TO_ACTION = {v: k for k, v in ACTION_MAP.items()}
-    
-    def __init__(self, layout_name='mediumGrid', ghost_agents=None, max_steps=500, 
-                 render_mode=None, reward_shaping=True, ghost_policies=None):
+    def __init__(
+        self,
+        layout_name: str = "mediumClassic",
+        ghost_type: str = "random",
+        num_ghosts: Optional[int] = None,
+        max_steps: int = 500,
+        render_mode: Optional[str] = None,
+        frame_time: float = 0.05
+    ):
         super().__init__()
         
         self.layout_name = layout_name
+        self.ghost_type = ghost_type
+        self.max_steps = max_steps
+        self.render_mode = render_mode
+        self.frame_time = frame_time
+        
+        # Load layout
         self.layout = getLayout(layout_name)
         if self.layout is None:
-            raise ValueError(f"Layout '{layout_name}' not found.")
+            raise ValueError(f"Layout '{layout_name}' not found")
         
-        self._ghost_agent_config = ghost_agents
-        self.num_ghosts = len(ghost_agents) if ghost_agents else self.layout.getNumGhosts()
+        self.width = self.layout.width
+        self.height = self.layout.height
         
-        self.ghost_policies = ghost_policies # Dict of {ghost idx: DQN model}
-
-        self.observation_space = gym.spaces.Box(
-            low=-1.0, high=1.0, shape=(30,), dtype=np.float32
+        # Ghost setup
+        self.num_ghosts = num_ghosts if num_ghosts is not None else self.layout.getNumGhosts()
+        
+        # Observation and action spaces
+        # 45-dimensional observation space
+        self.observation_space = spaces.Box(
+            low=-1.0, high=1.0, shape=(45,), dtype=np.float32
         )
-        self.action_space = gym.spaces.Discrete(5)
+        self.action_space = spaces.Discrete(5)
         
+        # State tracking
         self.game_state = None
-        self.current_score = 0.0
-        self.steps = 0
-        self.max_steps = max_steps
-        self.original_food = 0
+        self.step_count = 0
+        self.prev_score = 0
         self.prev_food_count = 0
         self.prev_capsule_count = 0
-        self.prev_pacman_pos = None
-        self.reward_shaping = reward_shaping
+        self.prev_distance_to_food = float('inf')
         
-        self.render_mode = render_mode
+        # Display
         self.display = None
         self._display_initialized = False
-
-    def _create_ghost_agents(self):
-        if self._ghost_agent_config is not None:
-            return [type(g)(g.index) for g in self._ghost_agent_config]
+        
+    def _create_ghosts(self) -> List:
+        """Create ghost agents based on ghost_type."""
+        if self.ghost_type == "random":
+            return [RandomGhost(i + 1) for i in range(self.num_ghosts)]
+        elif self.ghost_type == "directional":
+            return [DirectionalGhost(i + 1) for i in range(self.num_ghosts)]
         else:
-            return [ghostAgents.RandomGhost(i + 1) for i in range(self.num_ghosts)]
+            return [RandomGhost(i + 1) for i in range(self.num_ghosts)]
     
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-        
-        if seed is not None:
-            random.seed(seed)
-            np.random.seed(seed)
-        
-        self.game_state = GameState()
-        self.game_state.initialize(self.layout, numGhostAgents=self.num_ghosts)
-        self.ghost_agents = self._create_ghost_agents()
-        
-        self.current_score = 0.0
-        self.steps = 0
-        self.original_food = self.game_state.getNumFood()
-        self.prev_food_count = self.original_food
-        self.prev_capsule_count = len(self.game_state.getCapsules())
-        self.prev_pacman_pos = self.game_state.getPacmanPosition()
-        
-        if self.render_mode == 'human' and not self._display_initialized:
-            self.display = graphicsDisplay.PacmanGraphics(1.0, frameTime=0.05)
+    def _init_display(self):
+        """Initialize display for rendering."""
+        if self._display_initialized:
+            return
+        if self.render_mode == "human":
+            self.display = PacmanGraphics(zoom=1.0, frameTime=self.frame_time)
             self.display.initialize(self.game_state.data)
             self._display_initialized = True
-            graphicsUtils.refresh()
-        elif self.render_mode == 'human' and self._display_initialized:
-            self.display.initialize(self.game_state.data)
-            graphicsUtils.refresh()
-        
-        obs = extract_pacman_observation(self.game_state, self.original_food).astype(np.float32)
-        info = {
-            'raw_score': 0,
-            'food_remaining': self.original_food,
-            'capsules_remaining': self.prev_capsule_count,
-        }
-        
-        return obs, info
     
-    def step(self, action):
-        if isinstance(action, np.ndarray):
-            action = action.item() if action.ndim == 0 else int(action.flat[0])
-        else:
-            action = int(action)
+    def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
+        """Reset the environment."""
+        super().reset(seed=seed)
         
-        direction = self.ACTION_MAP[action]
-        legal_actions = self.game_state.getLegalActions(0)
+        # Create initial game state
+        rules = ClassicGameRules()
+        ghosts = self._create_ghosts()
         
-        if direction not in legal_actions:
-            direction = random.choice(legal_actions) if legal_actions else Directions.STOP
+        from pacmanAgents import GreedyAgent
+        pacman = GreedyAgent()
         
-        prev_score = self.game_state.getScore()
-        prev_ghost_dists = self._get_ghost_distances()
+        game = rules.newGame(self.layout, self.max_steps, pacman, ghosts, NullGraphics(), quiet=True)
+        self.game_state = game.state
         
-        self.game_state = self.game_state.generatePacmanSuccessor(direction)
-        
-        if self.render_mode == 'human' and self.display is not None:
-            self.display.update(self.game_state.data)
-            graphicsUtils.refresh()
-        
-        # ghost move
-        for ghost_idx in range(1, self.game_state.getNumAgents()):
-            if self.game_state.isWin() or self.game_state.isLose():
-                break
-
-            legal_ghost = self.game_state.getLegalActions(ghost_idx)
-
-            if self.ghost_policies is not None and ghost_idx in self.ghost_policies:
-                ghost_obs = extract_ghost_observation(self.game_state, ghost_idx)
-                
-                ghost_direction = get_best_legal_action(
-                    policy=self.ghost_policies[ghost_idx],
-                    obs=ghost_obs,
-                    legal_actions=legal_ghost
-                )
-
-            elif self._ghost_agent_config and ghost_idx - 1 < len(self.ghost_agents):
-                # use scripted behavior (original behavior)
-                ghost_direction = self.ghost_agents[ghost_idx - 1].getAction(self.game_state)
-
-                if ghost_direction not in legal_ghost:
-                    ghost_direction = random.choice(legal_ghost) if legal_ghost else Directions.STOP
-            else:
-                #random ghost (fallback)
-                ghost_direction = random.choice(legal_ghost) if legal_ghost else Directions.STOP
-            
-            self.game_state = self.game_state.generateSuccessor(ghost_idx, ghost_direction)
-            
-            if self.render_mode == 'human' and self.display is not None:
-                self.display.update(self.game_state.data)
-                graphicsUtils.refresh()
-        
-        new_score = self.game_state.getScore()
-        reward = new_score - prev_score
-        
-        if self.reward_shaping:
-            reward = self._shape_reward(reward, prev_ghost_dists)
-        
-        self.current_score = new_score
-        self.steps += 1
-        
-        terminated = self.game_state.isWin() or self.game_state.isLose()
-        truncated = self.max_steps is not None and self.steps >= self.max_steps and not terminated
-        
+        # Reset tracking
+        self.step_count = 0
+        self.prev_score = 0
         self.prev_food_count = self.game_state.getNumFood()
         self.prev_capsule_count = len(self.game_state.getCapsules())
-        self.prev_pacman_pos = self.game_state.getPacmanPosition()
+        self.prev_distance_to_food = self._get_min_food_distance()
         
-        obs = extract_pacman_observation(self.game_state, self.original_food).astype(np.float32)
+        # Initialize display if needed
+        if self.render_mode == "human":
+            self._init_display()
+            if self.display:
+                self.display.update(self.game_state.data)
+        
+        return self._get_observation(), {}
+    
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        """Execute one environment step."""
+        self.step_count += 1
+        
+        # Convert action to direction
+        direction = self.ACTIONS[action]
+        legal_actions = self.game_state.getLegalPacmanActions()
+        
+        # If action not legal, use STOP
+        if direction not in legal_actions:
+            direction = Directions.STOP
+        
+        # Execute Pacman's action
+        self.game_state = self.game_state.generatePacmanSuccessor(direction)
+        
+        # Execute ghost actions
+        for ghost_idx in range(1, self.num_ghosts + 1):
+            if self.game_state.isWin() or self.game_state.isLose():
+                break
+            ghost_agent = self._create_ghosts()[ghost_idx - 1]
+            ghost_action = ghost_agent.getAction(self.game_state)
+            self.game_state = self.game_state.generateSuccessor(ghost_idx, ghost_action)
+        
+        # Update display
+        if self.render_mode == "human" and self.display:
+            self.display.update(self.game_state.data)
+        
+        # Calculate reward
+        reward = self._calculate_reward()
+        
+        # Check termination
+        terminated = self.game_state.isWin() or self.game_state.isLose()
+        truncated = self.step_count >= self.max_steps
+        
         info = {
-            'raw_score': new_score,
-            'win': self.game_state.isWin(),
-            'lose': self.game_state.isLose(),
-            'food_remaining': self.prev_food_count,
-            'capsules_remaining': self.prev_capsule_count,
-            'steps': self.steps,
+            "score": self.game_state.getScore(),
+            "win": self.game_state.isWin(),
+            "steps": self.step_count
         }
         
-        return obs, reward, terminated, truncated, info
+        # Update tracking
+        self.prev_score = self.game_state.getScore()
+        self.prev_food_count = self.game_state.getNumFood()
+        self.prev_capsule_count = len(self.game_state.getCapsules())
+        self.prev_distance_to_food = self._get_min_food_distance()
+        
+        return self._get_observation(), reward, terminated, truncated, info
     
-    def _get_ghost_distances(self):
+    def _calculate_reward(self) -> float:
+        """Calculate shaped reward with dense signals."""
+        reward = 0.0
+        
+        # Score delta (normalized)
+        score_delta = self.game_state.getScore() - self.prev_score
+        reward += score_delta * 0.1
+        
+        # Win/lose bonuses
+        if self.game_state.isWin():
+            reward += 50.0
+        elif self.game_state.isLose():
+            reward -= 30.0
+        
+        # Food collection bonus
+        food_eaten = self.prev_food_count - self.game_state.getNumFood()
+        reward += food_eaten * 2.0
+        
+        # Capsule bonus
+        capsule_eaten = self.prev_capsule_count - len(self.game_state.getCapsules())
+        reward += capsule_eaten * 5.0
+        
+        # Distance to food reward (encourage moving toward food)
+        curr_dist = self._get_min_food_distance()
+        if self.prev_distance_to_food < float('inf') and curr_dist < float('inf'):
+            dist_improvement = self.prev_distance_to_food - curr_dist
+            reward += dist_improvement * 0.2
+        
+        # Small step penalty to encourage efficiency
+        reward -= 0.01
+        
+        return reward
+    
+    def _get_min_food_distance(self) -> float:
+        """Get Manhattan distance to nearest food."""
         pacman_pos = self.game_state.getPacmanPosition()
-        distances = []
-        for ghost_state in self.game_state.getGhostStates():
-            ghost_pos = ghost_state.getPosition()
-            dist = abs(pacman_pos[0] - ghost_pos[0]) + abs(pacman_pos[1] - ghost_pos[1])
-            distances.append((dist, ghost_state.scaredTimer > 0))
-        return distances
+        food_grid = self.game_state.getFood()
+        
+        min_dist = float('inf')
+        for x in range(food_grid.width):
+            for y in range(food_grid.height):
+                if food_grid[x][y]:
+                    dist = abs(pacman_pos[0] - x) + abs(pacman_pos[1] - y)
+                    min_dist = min(min_dist, dist)
+        
+        return min_dist
     
-    def _shape_reward(self, base_reward, prev_ghost_dists):
-        shaped_reward = 0.0
+    def _get_observation(self) -> np.ndarray:
+        """
+        Create 45-dimensional observation vector with:
+        - Pacman position (2)
+        - Ghost positions relative to pacman (8 = 4 ghosts * 2)
+        - Ghost scared times (4)
+        - Wall sensors in 4 directions at 3 distances (12)
+        - Food sensors in 4 directions (4)
+        - Capsule sensors in 4 directions (4)
+        - Nearest ghost danger in 4 directions (4)
+        - Directional features: nearest food direction (4)
+        - Game progress: food ratio, score normalized (3)
+        Total: 45
+        """
+        obs = np.zeros(45, dtype=np.float32)
         
-        ate_food = base_reward >= 9  # Detect if Pac-Man ate food
-        ate_ghost = base_reward >= 199  # Detect if Pac-Man ate a ghost
-        won = self.game_state.isWin()  # Check if Pac-Man won
-        died = self.game_state.isLose()  # Check if Pac-Man died
-
-        shaped_reward -= 0.01  # Small penalty to encourage faster decision-making and exploration
+        pacman_pos = self.game_state.getPacmanPosition()
         
-        # Reward for eating food (you can adjust the magnitude here)
-        if ate_food and not won:  # Reward eating food, but not if Pac-Man won
-            shaped_reward += 0.5
+        # Normalize position to [-1, 1]
+        obs[0] = (pacman_pos[0] / self.width) * 2 - 1
+        obs[1] = (pacman_pos[1] / self.height) * 2 - 1
         
-        # Reward for eating a ghost (large reward)
-        if ate_ghost:
-            shaped_reward += 4.0
+        # Ghost relative positions and scared times
+        ghost_states = self.game_state.getGhostStates()
+        for i in range(4):  # Max 4 ghosts
+            if i < len(ghost_states):
+                ghost_pos = ghost_states[i].getPosition()
+                obs[2 + i*2] = (ghost_pos[0] - pacman_pos[0]) / self.width
+                obs[3 + i*2] = (ghost_pos[1] - pacman_pos[1]) / self.height
+                obs[10 + i] = ghost_states[i].scaredTimer / SCARED_TIME if SCARED_TIME > 0 else 0
+            else:
+                obs[2 + i*2] = 0
+                obs[3 + i*2] = 0
+                obs[10 + i] = 0
         
-        # Large reward for winning the game
-        if won:
-            shaped_reward += 10.0
+        # Wall sensors (4 directions, 3 distances each)
+        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # N, S, E, W
+        walls = self.game_state.getWalls()
         
-        # Penalty for dying (reduced to -2.0 for better exploration)
-        if died:
-            shaped_reward -= 7.0  # Reduced from -5 to make dying less discouraging
+        for d_idx, (dx, dy) in enumerate(directions):
+            for dist in range(1, 4):
+                x, y = int(pacman_pos[0] + dx * dist), int(pacman_pos[1] + dy * dist)
+                if 0 <= x < self.width and 0 <= y < self.height:
+                    obs[14 + d_idx*3 + (dist-1)] = 1.0 if walls[x][y] else 0.0
+                else:
+                    obs[14 + d_idx*3 + (dist-1)] = 1.0  # Out of bounds = wall
         
-        # Reward dynamics based on ghost distances and scared state
-        current_ghost_dists = self._get_ghost_distances()  # Get the current ghost distances
-        for i, (curr_dist, is_scared) in enumerate(current_ghost_dists):
-            if i < len(prev_ghost_dists):  # Ensure matching ghost index
-                prev_dist, was_scared = prev_ghost_dists[i]
-                
-                # If both ghosts are scared, reward Pac-Man for staying further apart
-                if is_scared and was_scared:
-                    dist_delta = prev_dist - curr_dist
-                    if dist_delta > 0:  # Reward if the distance increases (Pac-Man staying further away)
-                        shaped_reward += 0.1 * dist_delta  # Small reward for improving ghost distance
-                elif not is_scared and not was_scared:
-                    # Penalize if Pac-Man gets too close to a non-scared ghost
-                    if curr_dist < 2:
-                        shaped_reward -= 0.1  # Increased penalty for proximity to non-scared ghost
-                elif is_scared and not was_scared:
-                    # Reward Pac-Man for getting close to scared ghosts
-                    if curr_dist < 3:
-                        shaped_reward += 0.2  # Small reward for getting close to scared ghosts
-                elif not is_scared and was_scared:
-                    # Penalize for getting too close to a previously scared ghost
-                    if curr_dist < 2:
-                        shaped_reward -= 0.1  # Small penalty for proximity to former scared ghost
+        # Food sensors in 4 directions (nearest food in each direction)
+        food = self.game_state.getFood()
+        for d_idx, (dx, dy) in enumerate(directions):
+            min_dist = float('inf')
+            for dist in range(1, max(self.width, self.height)):
+                x, y = int(pacman_pos[0] + dx * dist), int(pacman_pos[1] + dy * dist)
+                if 0 <= x < food.width and 0 <= y < food.height:
+                    if food[x][y]:
+                        min_dist = dist
+                        break
+                    if walls[x][y]:
+                        break
+                else:
+                    break
+            obs[26 + d_idx] = 1.0 / (min_dist + 1) if min_dist < float('inf') else 0.0
         
-        return shaped_reward
-
+        # Capsule sensors in 4 directions
+        capsules = self.game_state.getCapsules()
+        for d_idx, (dx, dy) in enumerate(directions):
+            min_dist = float('inf')
+            for cap_x, cap_y in capsules:
+                if dx != 0 and (cap_x - pacman_pos[0]) / dx > 0 and cap_y == pacman_pos[1]:
+                    min_dist = min(min_dist, abs(cap_x - pacman_pos[0]))
+                elif dy != 0 and (cap_y - pacman_pos[1]) / dy > 0 and cap_x == pacman_pos[0]:
+                    min_dist = min(min_dist, abs(cap_y - pacman_pos[1]))
+            obs[30 + d_idx] = 1.0 / (min_dist + 1) if min_dist < float('inf') else 0.0
+        
+        # Ghost danger in 4 directions (nearest non-scared ghost)
+        for d_idx, (dx, dy) in enumerate(directions):
+            min_danger = 0.0
+            for ghost_state in ghost_states:
+                if ghost_state.scaredTimer > 0:
+                    continue  # Skip scared ghosts
+                ghost_pos = ghost_state.getPosition()
+                rel_x = ghost_pos[0] - pacman_pos[0]
+                rel_y = ghost_pos[1] - pacman_pos[1]
+                # Check if ghost is in this direction
+                if dx != 0 and rel_x * dx > 0 and abs(rel_y) < 1:
+                    dist = abs(rel_x)
+                    min_danger = max(min_danger, 1.0 / (dist + 1))
+                elif dy != 0 and rel_y * dy > 0 and abs(rel_x) < 1:
+                    dist = abs(rel_y)
+                    min_danger = max(min_danger, 1.0 / (dist + 1))
+            obs[34 + d_idx] = min_danger
+        
+        # Directional features: nearest food direction (one-hot)
+        nearest_food_dir = self._get_nearest_food_direction()
+        obs[38:42] = nearest_food_dir
+        
+        # Game progress
+        total_food = self.layout.totalFood if hasattr(self.layout, 'totalFood') else self.prev_food_count
+        if total_food > 0:
+            obs[42] = self.game_state.getNumFood() / max(total_food, 1)
+        obs[43] = np.tanh(self.game_state.getScore() / 100.0)
+        obs[44] = self.step_count / self.max_steps
+        
+        return obs
+    
+    def _get_nearest_food_direction(self) -> np.ndarray:
+        """Get one-hot direction to nearest food."""
+        direction = np.zeros(4, dtype=np.float32)
+        pacman_pos = self.game_state.getPacmanPosition()
+        food = self.game_state.getFood()
+        
+        min_dist = float('inf')
+        nearest_food = None
+        
+        for x in range(food.width):
+            for y in range(food.height):
+                if food[x][y]:
+                    dist = abs(pacman_pos[0] - x) + abs(pacman_pos[1] - y)
+                    if dist < min_dist:
+                        min_dist = dist
+                        nearest_food = (x, y)
+        
+        if nearest_food:
+            dx = nearest_food[0] - pacman_pos[0]
+            dy = nearest_food[1] - pacman_pos[1]
+            if abs(dy) >= abs(dx):
+                direction[0 if dy > 0 else 1] = 1.0  # N or S
+            else:
+                direction[2 if dx > 0 else 3] = 1.0  # E or W
+        
+        return direction
+    
+    def action_masks(self) -> np.ndarray:
+        """Return valid action mask for MaskablePPO."""
+        legal_actions = self.game_state.getLegalPacmanActions()
+        mask = np.zeros(5, dtype=bool)
+        for action in legal_actions:
+            if action in self.ACTION_TO_INDEX:
+                mask[self.ACTION_TO_INDEX[action]] = True
+        return mask
     
     def render(self):
-        if self.render_mode == 'human':
-            if self.display is not None:
-                self.display.update(self.game_state.data)
-        elif self.render_mode == 'text':
-            print(str(self.game_state))
-        return None
+        """Render the environment."""
+        if self.render_mode == "human" and self.display:
+            self.display.update(self.game_state.data)
     
     def close(self):
-        if self.display is not None:
+        """Clean up resources."""
+        if self.display:
             try:
                 self.display.finish()
             except:
                 pass
-            self._display_initialized = False
             self.display = None
-    
-    def get_legal_action_mask(self):
-        legal_actions = self.game_state.getLegalActions(0)
-        mask = np.zeros(5, dtype=np.bool_)
-        for action in legal_actions:
-            if action in self.DIRECTION_TO_ACTION:
-                mask[self.DIRECTION_TO_ACTION[action]] = True
-        return mask
+            self._display_initialized = False
 
 
-def make_pacman_env(layout_name='smallGrid', ghost_type='random', num_ghosts=None,
-                    max_steps=500, render_mode=None, reward_shaping=True):
-    """Factory function to create a PacmanEnv with specified configuration."""
-    layout = getLayout(layout_name)
-    if layout is None:
-        raise ValueError(f"Layout '{layout_name}' not found")
-    
-    if num_ghosts is None:
-        num_ghosts = layout.getNumGhosts()
-    else:
-        num_ghosts = min(num_ghosts, layout.getNumGhosts())
-    
-    if ghost_type == 'random':
-        ghosts = [ghostAgents.RandomGhost(i + 1) for i in range(num_ghosts)]
-    elif ghost_type == 'directional':
-        ghosts = [ghostAgents.DirectionalGhost(i + 1) for i in range(num_ghosts)]
-    else:
-        ghosts = None
-    
+def make_pacman_env(
+    layout_name: str = "mediumClassic",
+    ghost_type: str = "random",
+    num_ghosts: Optional[int] = None,
+    max_steps: int = 500,
+    render_mode: Optional[str] = None,
+    frame_time: float = 0.05
+) -> PacmanEnv:
+    """Create a Pacman environment."""
     return PacmanEnv(
         layout_name=layout_name,
-        ghost_agents=ghosts,
+        ghost_type=ghost_type,
+        num_ghosts=num_ghosts,
         max_steps=max_steps,
         render_mode=render_mode,
-        reward_shaping=reward_shaping
+        frame_time=frame_time
     )
+
+
+# Alias for backward compatibility
+make_masked_pacman_env = make_pacman_env
