@@ -177,7 +177,8 @@ def train_pacman(
     layout_name,
     dirs,
     initial_timesteps=100000,
-    refinement_timesteps=50000
+    refinement_timesteps=50000,
+    reward_shaping=False
 ):
     """
     Train Pac-Man with PPO against current ghost policies.
@@ -206,7 +207,7 @@ def train_pacman(
         ghost_policies=ghost_models,
         max_steps=500,
         render_mode=None,
-        reward_shaping=False
+        reward_shaping=reward_shaping
     )
     
     # Load previous version or create new model
@@ -416,9 +417,26 @@ def train_adversarial_rl(
     dirs = create_directories()
     print(f"Output directory: {os.path.dirname(dirs['models'])}\n")
     
-    # Initialize models (None = random policy)
-    pacman_model = None
+    # ========== INITIAL TRAINING: Pac-Man vs Random Ghosts ==========
+    print(f"\n{'='*60}")
+    print(f"INITIAL TRAINING: Pac-Man vs Random Ghosts")
+    print(f"{'='*60}\n")
+
     ghost_models = {i: None for i in range(1, num_ghosts + 1)}
+
+    # Initialize models (None = random policy)
+    pacman_model = train_pacman(
+        round_num=0,
+        pacman_model=None,
+        ghost_models=ghost_models, 
+        layout_name=layout_name,
+        dirs=dirs,
+        initial_timesteps=pacman_initial_timesteps,
+        refinement_timesteps=0,
+        reward_shaping=True
+    )
+
+    print(f"\n Pac-Man v1 trained against random ghosts")
     
     # Training history
     history = {
@@ -434,9 +452,9 @@ def train_adversarial_rl(
         
         if round_num % 2 == 1:
             # ========== ODD ROUNDS: Train Ghosts Sequentially ==========
-            version = (round_num // 2) + 1
+            version = (round_num - 1) // 2 + 1
             print(f"\nPhase: Ghost Training (→ v{version})")
-            print(f"   Target: Train ghosts against Pac-Man v{version-1}")
+            print(f"   Target: Train ghosts against Pac-Man v{version}")
             
             # Determine training order with rotation
             base_order = list(range(1, num_ghosts + 1))
@@ -465,7 +483,7 @@ def train_adversarial_rl(
         
         else:
             # ========== EVEN ROUNDS: Train Pac-Man ==========
-            version = round_num // 2
+            version = (round_num // 2) + 1 
             print(f"\nPhase: Pac-Man Training (→ v{version})")
             print(f"   Target: Train Pac-Man against Ghosts v{version}")
             
@@ -475,7 +493,7 @@ def train_adversarial_rl(
                 ghost_models=ghost_models,
                 layout_name=layout_name,
                 dirs=dirs,
-                initial_timesteps=pacman_initial_timesteps,
+                initial_timesteps=0,
                 refinement_timesteps=pacman_refinement_timesteps
             )
             
@@ -492,19 +510,22 @@ def train_adversarial_rl(
             
             history['evaluations'].append({
                 'round': round_num,
-                'pacman_version': round_num // 2,
+                'pacman_version': (round_num // 2) + (1 if round_num % 2 == 0 else 0),
                 'ghost_version': (round_num // 2) + (1 if round_num % 2 == 1 else 0),
                 'stats': stats
             })
         
         history['rounds'].append(round_num)
+
+    final_pacman_version = (num_rounds // 2) + (1 if num_rounds % 2 == 0 else 0)
+    final_ghost_version = (num_rounds // 2) + (1 if num_rounds % 2 == 1 else 0)
     
     print(f"\n\n{'#'*60}")
     print(f"# TRAINING COMPLETE!")
     print(f"{'#'*60}")
     print(f"Final versions:")
-    print(f"  Pac-Man: v{num_rounds // 2}")
-    print(f"  Ghosts:  v{(num_rounds // 2) + (1 if num_rounds % 2 == 1 else 0)}")
+    print(f"  Pac-Man: v{final_pacman_version}")
+    print(f"  Ghosts:  v{final_ghost_version}")
     print(f"\nModels saved to: {dirs['models']}")
     print(f"Logs saved to:   {dirs['logs']}")
     

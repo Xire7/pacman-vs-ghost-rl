@@ -205,38 +205,55 @@ class PacmanEnv(gym.Env):
     def _shape_reward(self, base_reward, prev_ghost_dists):
         shaped_reward = 0.0
         
-        ate_food = base_reward >= 9
-        ate_ghost = base_reward >= 199
-        won = self.game_state.isWin()
-        died = self.game_state.isLose()
+        ate_food = base_reward >= 9  # Detect if Pac-Man ate food
+        ate_ghost = base_reward >= 199  # Detect if Pac-Man ate a ghost
+        won = self.game_state.isWin()  # Check if Pac-Man won
+        died = self.game_state.isLose()  # Check if Pac-Man died
+
+        shaped_reward -= 0.01  # Small penalty to encourage faster decision-making and exploration
         
-        shaped_reward -= 0.01
-        
-        if ate_food and not won:
+        # Reward for eating food (you can adjust the magnitude here)
+        if ate_food and not won:  # Reward eating food, but not if Pac-Man won
             shaped_reward += 0.5
         
+        # Reward for eating a ghost (large reward)
         if ate_ghost:
-            shaped_reward += 2.0
+            shaped_reward += 4.0
         
+        # Large reward for winning the game
         if won:
             shaped_reward += 10.0
         
+        # Penalty for dying (reduced to -2.0 for better exploration)
         if died:
-            shaped_reward -= 5.0
+            shaped_reward -= 7.0  # Reduced from -5 to make dying less discouraging
         
-        current_ghost_dists = self._get_ghost_distances()
+        # Reward dynamics based on ghost distances and scared state
+        current_ghost_dists = self._get_ghost_distances()  # Get the current ghost distances
         for i, (curr_dist, is_scared) in enumerate(current_ghost_dists):
-            if i < len(prev_ghost_dists):
+            if i < len(prev_ghost_dists):  # Ensure matching ghost index
                 prev_dist, was_scared = prev_ghost_dists[i]
+                
+                # If both ghosts are scared, reward Pac-Man for staying further apart
                 if is_scared and was_scared:
                     dist_delta = prev_dist - curr_dist
-                    if dist_delta > 0:
-                        shaped_reward += 0.1 * dist_delta
+                    if dist_delta > 0:  # Reward if the distance increases (Pac-Man staying further away)
+                        shaped_reward += 0.1 * dist_delta  # Small reward for improving ghost distance
                 elif not is_scared and not was_scared:
+                    # Penalize if Pac-Man gets too close to a non-scared ghost
                     if curr_dist < 2:
-                        shaped_reward -= 0.05
+                        shaped_reward -= 0.1  # Increased penalty for proximity to non-scared ghost
+                elif is_scared and not was_scared:
+                    # Reward Pac-Man for getting close to scared ghosts
+                    if curr_dist < 3:
+                        shaped_reward += 0.2  # Small reward for getting close to scared ghosts
+                elif not is_scared and was_scared:
+                    # Penalize for getting too close to a previously scared ghost
+                    if curr_dist < 2:
+                        shaped_reward -= 0.1  # Small penalty for proximity to former scared ghost
         
         return shaped_reward
+
     
     def render(self):
         if self.render_mode == 'human':

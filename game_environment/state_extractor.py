@@ -182,6 +182,8 @@ def get_best_legal_action(policy, obs, legal_actions):
     Returns:
         Direction: Best legal action
     """
+    if policy is None:
+        return np.random.choice(legal_actions)
 
     action_map = {
         0: Directions.NORTH, 1: Directions.SOUTH,

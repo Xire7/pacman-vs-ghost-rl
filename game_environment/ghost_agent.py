@@ -166,16 +166,20 @@ class IndependentGhostEnv(gym.Env):
         
         # Reward for being close (if not scared)
         if ghost_state.scaredTimer == 0:
-            if dist <= 1:
-                reward += 10.0  # Very close!
-            elif dist <= 3:
-                reward += 2.0   # Approaching
+            if dist < 1:  # Very close to Pac-Man
+                reward -= 2.0  # Large penalty to discourage getting too close
+            elif dist < 3:  # Close to Pac-Man
+                reward -= 0.5  # Medium penalty
             else:
-                reward -= 0.1 * dist  # Too far
+                reward -= 0.05 * dist  # Moderate penalty for being too far from Pac-Man
         else:
             # If scared, reward for staying away
-            reward += 0.05 * dist
+            reward += 0.1 * dist  # Increased reward for staying far away
+
+        # Reward for getting close to scared ghosts
+        if ghost_state.scaredTimer == 0 and dist < 3:
+            reward += 0.5  # Increased reward for getting close to scared ghosts
         
-        reward -= 0.01  # Small time penalty
+        reward -= 0.02  # Slightly increased penalty for taking too long to move
         
         return reward
