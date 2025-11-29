@@ -24,7 +24,7 @@ class PacmanEnv(gym.Env):
     """
     Gymnasium environment for Pacman with action masking.
     
-    Observation: 45-dimensional vector with normalized features
+    Observation: 53-dimensional vector with normalized features
     Actions: 0=North, 1=South, 2=East, 3=West, 4=Stop
     """
     
@@ -63,9 +63,8 @@ class PacmanEnv(gym.Env):
         self.num_ghosts = num_ghosts if num_ghosts is not None else self.layout.getNumGhosts()
         
         # Observation and action spaces
-        # 45-dimensional observation space
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(45,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(53,), dtype=np.float32
         )
         self.action_space = spaces.Discrete(5)
         
@@ -155,10 +154,8 @@ class PacmanEnv(gym.Env):
         if self.render_mode == "human" and self.display:
             self.display.update(self.game_state.data)
         
-        # Calculate reward
         reward = self._calculate_reward()
         
-        # Check termination
         terminated = self.game_state.isWin() or self.game_state.isLose()
         truncated = self.step_count >= self.max_steps
         
@@ -168,7 +165,6 @@ class PacmanEnv(gym.Env):
             "steps": self.step_count
         }
         
-        # Update tracking
         self.prev_score = self.game_state.getScore()
         self.prev_food_count = self.game_state.getNumFood()
         self.prev_capsule_count = len(self.game_state.getCapsules())
@@ -180,31 +176,33 @@ class PacmanEnv(gym.Env):
         """Calculate shaped reward with dense signals."""
         reward = 0.0
         
-        # Score delta (normalized)
         score_delta = self.game_state.getScore() - self.prev_score
         reward += score_delta * 0.1
         
-        # Win/lose bonuses
         if self.game_state.isWin():
             reward += 50.0
         elif self.game_state.isLose():
             reward -= 30.0
         
-        # Food collection bonus
         food_eaten = self.prev_food_count - self.game_state.getNumFood()
         reward += food_eaten * 2.0
         
-        # Capsule bonus
         capsule_eaten = self.prev_capsule_count - len(self.game_state.getCapsules())
         reward += capsule_eaten * 5.0
         
-        # Distance to food reward (encourage moving toward food)
         curr_dist = self._get_min_food_distance()
         if self.prev_distance_to_food < float('inf') and curr_dist < float('inf'):
             dist_improvement = self.prev_distance_to_food - curr_dist
             reward += dist_improvement * 0.2
         
-        # Small step penalty to encourage efficiency
+        pacman_pos = self.game_state.getPacmanPosition()
+        for ghost_state in self.game_state.getGhostStates():
+            if ghost_state.scaredTimer == 0: 
+                ghost_pos = ghost_state.getPosition()
+                dist = abs(pacman_pos[0] - ghost_pos[0]) + abs(pacman_pos[1] - ghost_pos[1])
+                if dist <= 1:
+                    reward -= 0.3 
+        
         reward -= 0.01
         
         return reward
@@ -224,53 +222,43 @@ class PacmanEnv(gym.Env):
         return min_dist
     
     def _get_observation(self) -> np.ndarray:
-        """
-        Create 45-dimensional observation vector with:
-        - Pacman position (2)
-        - Ghost positions relative to pacman (8 = 4 ghosts * 2)
-        - Ghost scared times (4)
-        - Wall sensors in 4 directions at 3 distances (12)
-        - Food sensors in 4 directions (4)
-        - Capsule sensors in 4 directions (4)
-        - Nearest ghost danger in 4 directions (4)
-        - Directional features: nearest food direction (4)
-        - Game progress: food ratio, score normalized (3)
-        Total: 45
-        """
-        obs = np.zeros(45, dtype=np.float32)
+        """Create 53-dimensional observation vector."""
+        obs = np.zeros(53, dtype=np.float32)
         
         pacman_pos = self.game_state.getPacmanPosition()
         
-        # Normalize position to [-1, 1]
         obs[0] = (pacman_pos[0] / self.width) * 2 - 1
         obs[1] = (pacman_pos[1] / self.height) * 2 - 1
         
-        # Ghost relative positions and scared times
         ghost_states = self.game_state.getGhostStates()
-        for i in range(4):  # Max 4 ghosts
+        for i in range(4):
             if i < len(ghost_states):
                 ghost_pos = ghost_states[i].getPosition()
                 obs[2 + i*2] = (ghost_pos[0] - pacman_pos[0]) / self.width
                 obs[3 + i*2] = (ghost_pos[1] - pacman_pos[1]) / self.height
                 obs[10 + i] = ghost_states[i].scaredTimer / SCARED_TIME if SCARED_TIME > 0 else 0
+                ghost_dir = ghost_states[i].getDirection()
+                dx, dy = Actions.directionToVector(ghost_dir)
+                obs[14 + i*2] = dx
+                obs[15 + i*2] = dy
             else:
                 obs[2 + i*2] = 0
                 obs[3 + i*2] = 0
                 obs[10 + i] = 0
+                obs[14 + i*2] = 0
+                obs[15 + i*2] = 0
         
-        # Wall sensors (4 directions, 3 distances each)
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # N, S, E, W
+        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
         walls = self.game_state.getWalls()
         
         for d_idx, (dx, dy) in enumerate(directions):
             for dist in range(1, 4):
                 x, y = int(pacman_pos[0] + dx * dist), int(pacman_pos[1] + dy * dist)
                 if 0 <= x < self.width and 0 <= y < self.height:
-                    obs[14 + d_idx*3 + (dist-1)] = 1.0 if walls[x][y] else 0.0
+                    obs[22 + d_idx*3 + (dist-1)] = 1.0 if walls[x][y] else 0.0
                 else:
-                    obs[14 + d_idx*3 + (dist-1)] = 1.0  # Out of bounds = wall
+                    obs[22 + d_idx*3 + (dist-1)] = 1.0
         
-        # Food sensors in 4 directions (nearest food in each direction)
         food = self.game_state.getFood()
         for d_idx, (dx, dy) in enumerate(directions):
             min_dist = float('inf')
@@ -284,9 +272,8 @@ class PacmanEnv(gym.Env):
                         break
                 else:
                     break
-            obs[26 + d_idx] = 1.0 / (min_dist + 1) if min_dist < float('inf') else 0.0
+            obs[34 + d_idx] = 1.0 / (min_dist + 1) if min_dist < float('inf') else 0.0
         
-        # Capsule sensors in 4 directions
         capsules = self.game_state.getCapsules()
         for d_idx, (dx, dy) in enumerate(directions):
             min_dist = float('inf')
@@ -295,36 +282,32 @@ class PacmanEnv(gym.Env):
                     min_dist = min(min_dist, abs(cap_x - pacman_pos[0]))
                 elif dy != 0 and (cap_y - pacman_pos[1]) / dy > 0 and cap_x == pacman_pos[0]:
                     min_dist = min(min_dist, abs(cap_y - pacman_pos[1]))
-            obs[30 + d_idx] = 1.0 / (min_dist + 1) if min_dist < float('inf') else 0.0
+            obs[38 + d_idx] = 1.0 / (min_dist + 1) if min_dist < float('inf') else 0.0
         
-        # Ghost danger in 4 directions (nearest non-scared ghost)
         for d_idx, (dx, dy) in enumerate(directions):
             min_danger = 0.0
             for ghost_state in ghost_states:
                 if ghost_state.scaredTimer > 0:
-                    continue  # Skip scared ghosts
+                    continue
                 ghost_pos = ghost_state.getPosition()
                 rel_x = ghost_pos[0] - pacman_pos[0]
                 rel_y = ghost_pos[1] - pacman_pos[1]
-                # Check if ghost is in this direction
                 if dx != 0 and rel_x * dx > 0 and abs(rel_y) < 1:
                     dist = abs(rel_x)
                     min_danger = max(min_danger, 1.0 / (dist + 1))
                 elif dy != 0 and rel_y * dy > 0 and abs(rel_x) < 1:
                     dist = abs(rel_y)
                     min_danger = max(min_danger, 1.0 / (dist + 1))
-            obs[34 + d_idx] = min_danger
+            obs[42 + d_idx] = min_danger
         
-        # Directional features: nearest food direction (one-hot)
         nearest_food_dir = self._get_nearest_food_direction()
-        obs[38:42] = nearest_food_dir
+        obs[46:50] = nearest_food_dir
         
-        # Game progress
         total_food = self.layout.totalFood if hasattr(self.layout, 'totalFood') else self.prev_food_count
         if total_food > 0:
-            obs[42] = self.game_state.getNumFood() / max(total_food, 1)
-        obs[43] = np.tanh(self.game_state.getScore() / 100.0)
-        obs[44] = self.step_count / self.max_steps
+            obs[50] = self.game_state.getNumFood() / max(total_food, 1)
+        obs[51] = np.tanh(self.game_state.getScore() / 100.0)
+        obs[52] = self.step_count / self.max_steps
         
         return obs
     
@@ -349,9 +332,9 @@ class PacmanEnv(gym.Env):
             dx = nearest_food[0] - pacman_pos[0]
             dy = nearest_food[1] - pacman_pos[1]
             if abs(dy) >= abs(dx):
-                direction[0 if dy > 0 else 1] = 1.0  # N or S
+                direction[0 if dy > 0 else 1] = 1.0
             else:
-                direction[2 if dx > 0 else 3] = 1.0  # E or W
+                direction[2 if dx > 0 else 3] = 1.0
         
         return direction
     
