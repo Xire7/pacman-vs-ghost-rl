@@ -1,0 +1,37 @@
+{
+  "timestamp": "20251127_194649",
+  "stages": {
+    "stage1_no_ghosts": {
+      "timesteps": 50000,
+      "layout": "mediumClassic"
+    },
+    "stage2_random_ghosts": {
+      "timesteps": 100000,
+      "layout": "mediumClassic",
+      "ghost_type": "random"
+    },
+    "stage3_adversarial": {
+      "rounds": 4,
+      "layout": "mediumClassic",
+      "num_ghosts": 2
+    }
+  },
+  "hyperparameters": {
+    "full_curriculum": true,
+    "skip_to": null,
+    "pacman_model": null,
+    "layout": "mediumClassic",
+    "num_ghosts": 2,
+    "ghost_type": "random",
+    "max_steps": 500,
+    "stage1_timesteps": 50000,
+    "stage2_timesteps": 100000,
+    "adversarial_rounds": 4,
+    "ghost_initial_steps": 50000,
+    "ghost_refine_steps": 30000,
+    "pacman_refine_steps": 50000,
+    "num_envs": 4,
+    "learning_rate": 0.0003,
+    "output_dir": "curriculum_output"
+  }
+}

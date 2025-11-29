@@ -1,0 +1,7 @@
+{
+  "stage": "no_ghosts",
+  "mean_reward": 22.950525283813477,
+  "std_reward": 13.454124450683594,
+  "timesteps": 50000,
+  "num_ghosts": 0
+}

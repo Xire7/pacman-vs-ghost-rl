@@ -6,5 +6,6 @@ models/
 .github/
 *.zip
 videos/
+adversarialRLREADME.md
 
 training_output/

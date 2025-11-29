@@ -1,402 +1,474 @@
 """
-Visualize and Record trained Pac-Man vs Ghosts agents
+Live Visualization for Trained Pac-Man Agents
 
-Features:
-- Live visualization
-- Video recording to MP4
-- Episode statistics
+This script lets you watch your trained Pac-Man agents play in real-time
+against scripted or adversarial ghosts.
 
 Usage:
-    # Live visualization only
-    python visualize_agents.py --pacman-path models/pacman_v1 --ghost-dir models/ --ghost-version 1
-    
-    # Record video
-    python visualize_agents.py --pacman-path models/pacman_v1 --ghost-dir models/ --ghost-version 1 --record --video-folder videos
+    # Watch curriculum Stage 2 agent (vs random ghosts)
+    python visualize_agents.py \
+        --pacman-model curriculum_output/run_*/models/pacman_random_ghosts_final \
+        --ghost-type random
+
+    # Watch adversarial agent (vs learned ghosts)
+    python visualize_agents.py \
+        --pacman-model curriculum_output/run_*/models/pacman_adversarial_v2 \
+        --ghost-dir curriculum_output/run_*/models \
+        --ghost-version 2
+
+    # Watch multiple games in sequence
+    python visualize_agents.py \
+        --pacman-model path/to/model \
+        --episodes 10 \
+        --speed 0.05
+
+    # Compare two Pac-Man models side-by-side (sequential)
+    python visualize_agents.py --compare \
+        --model1 curriculum_output/run_*/models/pacman_random_ghosts_final \
+        --model2 curriculum_output/run_*/models/pacman_adversarial_v2 \
+        --episodes 5
 """
 
 import argparse
 import os
+import sys
 import time
 import numpy as np
 from stable_baselines3 import PPO, DQN
-from gym_env import PacmanEnv
-import json
+
+# Add game_environment to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'game_environment'))
+
+from gym_env import make_pacman_env, PacmanEnv
+import ghostAgents
 
 
-def visualize_game(
-    pacman_model_path,
-    ghost_model_dir,
-    ghost_version,
-    layout_name='mediumClassic',
-    num_ghosts=2,
-    n_episodes=5,
-    frame_delay=0.05,
-    record_video=False,
-    video_folder='videos',
-    video_fps=10
-):
-    """
-    Visualize trained agents playing with optional video recording.
+class GameVisualizer:
+    """Handles visualization of trained agents."""
     
-    Args:
-        pacman_model_path: Path to Pac-Man model (without .zip)
-        ghost_model_dir: Directory containing ghost models
-        ghost_version: Version number of ghosts to load
-        layout_name: Map layout
-        num_ghosts: Number of ghosts
-        n_episodes: Number of episodes to play
-        frame_delay: Delay between frames (seconds)
-        record_video: Whether to record video
-        video_folder: Directory to save videos
-        video_fps: Frames per second for video
+    def __init__(self, frame_time=0.1):
+        self.frame_time = frame_time
+        self.stats = {
+            'games_played': 0,
+            'wins': 0,
+            'losses': 0,
+            'timeouts': 0,
+            'total_score': 0,
+            'total_steps': 0
+        }
     
-    Returns:
-        dict: Statistics from all episodes
-    """
-    print(f"\n{'='*60}")
-    print(f"Loading models...")
-    print(f"{'='*60}")
-    
-    # Load Pac-Man
-    pacman_model = PPO.load(pacman_model_path)
-    print(f"✓ Loaded Pac-Man: {pacman_model_path}")
-    
-    # Load ghosts
-    ghost_models = {}
-    for i in range(1, num_ghosts + 1):
-        ghost_path = os.path.join(ghost_model_dir, f"ghost_{i}_v{ghost_version}")
-        if os.path.exists(ghost_path + ".zip"):
-            ghost_models[i] = DQN.load(ghost_path)
-            print(f"Loaded Ghost {i}: {ghost_path}")
-        else:
-            print(f"Ghost {i} not found: {ghost_path}")
-    
-    if len(ghost_models) == 0:
-        print("Error: No ghost models loaded!")
-        return None
-    
-    # Setup video recording if requested
-    if record_video:
-        try:
-            import imageio
-            print(f"\nVideo recording enabled")
-            print(f"   Output folder: {video_folder}")
-            print(f"   FPS: {video_fps}")
-        except ImportError:
-            print("\nVideo recording requires imageio[ffmpeg]")
-            print("   Installing: pip install imageio[ffmpeg]")
-            import subprocess
-            subprocess.check_call(['pip', 'install', 'imageio[ffmpeg]'])
-            import imageio
-            print("✓ Installed!\n")
-        
-        os.makedirs(video_folder, exist_ok=True)
-    
-    # Create environment with rendering
-    env = PacmanEnv(
-        layout_name=layout_name,
-        ghost_policies=ghost_models,
+    def play_game(
+        self,
+        pacman_model,
+        layout_name,
+        ghost_policies=None,
+        ghost_type='random',
+        num_ghosts=4,
         max_steps=500,
-        render_mode='human' if not record_video else 'text',  # Text mode for recording
-        reward_shaping=False
-    )
-    
-    print(f"\n{'='*60}")
-    print(f"Starting visualization ({n_episodes} episodes)")
-    print(f"{'='*60}\n")
-    
-    # Statistics tracking
-    all_stats = {
-        'episodes': [],
-        'pacman_wins': 0,
-        'ghost_wins': 0,
-        'timeouts': 0,
-        'scores': [],
-        'steps': []
-    }
-    
-    for episode in range(n_episodes):
-        obs, _ = env.reset()
+        deterministic=True,
+        show_stats=True
+    ):
+        """
+        Play a single game and visualize it.
+        
+        Args:
+            pacman_model: Trained PPO model
+            layout_name: Map layout
+            ghost_policies: Dict of {ghost_idx: DQN_model} for adversarial ghosts
+            ghost_type: 'random' or 'directional' (if not using ghost_policies)
+            num_ghosts: Number of ghosts
+            max_steps: Maximum steps per game
+            deterministic: Use deterministic policy
+            show_stats: Print game statistics
+        
+        Returns:
+            dict: Game statistics
+        """
+        # Create environment with rendering
+        if ghost_policies:
+            env = PacmanEnv(
+                layout_name=layout_name,
+                ghost_policies=ghost_policies,
+                max_steps=max_steps,
+                render_mode='human',
+                reward_shaping=False
+            )
+            ghost_desc = f"adversarial (v{len(ghost_policies)})"
+        else:
+            env = make_pacman_env(
+                layout_name=layout_name,
+                ghost_type=ghost_type,
+                num_ghosts=num_ghosts,
+                max_steps=max_steps,
+                render_mode='human',
+                reward_shaping=True
+            )
+            ghost_desc = ghost_type
+        
+        if show_stats:
+            print(f"\n{'='*60}")
+            print(f"Game {self.stats['games_played'] + 1}")
+            print(f"Layout: {layout_name}, Ghosts: {num_ghosts} ({ghost_desc})")
+            print(f"{'='*60}")
+        
+        # Run episode
+        obs, info = env.reset()
         done = False
-        steps = 0
         episode_reward = 0
-        
-        print(f"\n{'─'*60}")
-        print(f"Episode {episode + 1}/{n_episodes}")
-        print(f"{'─'*60}")
-        
-        # Record frames if video recording enabled
-        frames = [] if record_video else None
+        steps = 0
         
         while not done:
-            # Capture frame for video (before action)
-            if record_video:
-                # Convert game state to ASCII art frame
-                frame_text = str(env.game_state)
-                frames.append(frame_text)
+            # Get action from policy
+            action, _ = pacman_model.predict(obs, deterministic=deterministic)
             
-            # Pac-Man action
-            action, _ = pacman_model.predict(obs, deterministic=True)
+            # Execute action
             obs, reward, terminated, truncated, info = env.step(action)
-            
             episode_reward += reward
             steps += 1
             done = terminated or truncated
             
-            # Delay for visibility (only if showing GUI)
-            if not record_video:
-                time.sleep(frame_delay)
+            # Render
+            env.render()
+            time.sleep(self.frame_time)
         
-        # Save video if recording
-        if record_video and frames:
-            video_filename = f"episode_{episode+1}_v{ghost_version}.txt"
-            video_path = os.path.join(video_folder, video_filename)
-            
-            with open(video_path, 'w') as f:
-                f.write(f"Episode {episode + 1} - Pac-Man v{ghost_version} vs Ghosts v{ghost_version}\n")
-                f.write("=" * 60 + "\n\n")
-                for i, frame in enumerate(frames):
-                    f.write(f"Step {i+1}:\n{frame}\n\n")
-            
-            print(f"Saved ASCII replay: {video_path}")
-        
-        # Episode summary
+        # Determine result
         if info.get('win', False):
-            result = "PAC-MAN WINS!"
-            all_stats['pacman_wins'] += 1
+            result = "WIN"
+            self.stats['wins'] += 1
         elif info.get('lose', False):
-            result = "GHOSTS WIN!"
-            all_stats['ghost_wins'] += 1
+            result = "LOSS"
+            self.stats['losses'] += 1
         else:
             result = "TIMEOUT"
-            all_stats['timeouts'] += 1
+            self.stats['timeouts'] += 1
         
-        score = info.get('raw_score', 0)
-        all_stats['scores'].append(score)
-        all_stats['steps'].append(steps)
+        self.stats['games_played'] += 1
+        self.stats['total_score'] += info.get('raw_score', 0)
+        self.stats['total_steps'] += steps
         
-        episode_stats = {
-            'episode': episode + 1,
+        # Print game result
+        if show_stats:
+            print(f"\n{'='*60}")
+            print(f"Result: {result}")
+            print(f"Score: {info.get('raw_score', 0):.0f}")
+            print(f"Steps: {steps}")
+            print(f"Reward: {episode_reward:.2f}")
+            print(f"{'='*60}")
+        
+        env.close()
+        
+        return {
             'result': result,
-            'score': score,
+            'score': info.get('raw_score', 0),
             'steps': steps,
             'reward': episode_reward
         }
-        all_stats['episodes'].append(episode_stats)
-        
-        print(f"  {result}")
-        print(f"  Score:  {score:.0f}")
-        print(f"  Steps:  {steps}")
-        print(f"  Reward: {episode_reward:.2f}")
     
-    env.close()
+    def print_summary(self):
+        """Print summary statistics."""
+        if self.stats['games_played'] == 0:
+            return
+        
+        print(f"\n{'='*60}")
+        print("SUMMARY STATISTICS")
+        print(f"{'='*60}")
+        print(f"Games Played: {self.stats['games_played']}")
+        print(f"Wins:         {self.stats['wins']} ({100*self.stats['wins']/self.stats['games_played']:.1f}%)")
+        print(f"Losses:       {self.stats['losses']} ({100*self.stats['losses']/self.stats['games_played']:.1f}%)")
+        print(f"Timeouts:     {self.stats['timeouts']} ({100*self.stats['timeouts']/self.stats['games_played']:.1f}%)")
+        print(f"")
+        print(f"Avg Score:    {self.stats['total_score']/self.stats['games_played']:.1f}")
+        print(f"Avg Steps:    {self.stats['total_steps']/self.stats['games_played']:.1f}")
+        print(f"{'='*60}\n")
+
+
+def load_ghost_policies(ghost_dir, ghost_version, num_ghosts):
+    """
+    Load trained ghost policies.
+    
+    Args:
+        ghost_dir: Directory containing ghost models
+        ghost_version: Version number
+        num_ghosts: Number of ghosts to load
+    
+    Returns:
+        dict: {ghost_idx: DQN_model}
+    """
+    ghost_policies = {}
+    
+    for i in range(1, num_ghosts + 1):
+        ghost_path = os.path.join(ghost_dir, f"ghost_{i}_v{ghost_version}")
+        
+        if os.path.exists(ghost_path + ".zip"):
+            try:
+                ghost_policies[i] = DQN.load(ghost_path)
+                print(f"✓ Loaded Ghost {i} v{ghost_version}")
+            except Exception as e:
+                print(f"✗ Failed to load Ghost {i}: {e}")
+        else:
+            print(f"⚠  Ghost {i} not found at {ghost_path}")
+    
+    if not ghost_policies:
+        print("Warning: No ghost policies loaded")
+        return None
+    
+    return ghost_policies
+
+
+def visualize_single_model(args):
+    """Visualize a single trained model."""
+    print(f"\n{'#'*60}")
+    print("# PAC-MAN AGENT VISUALIZATION")
+    print(f"{'#'*60}")
+    print(f"Model: {args.pacman_model}")
+    print(f"Layout: {args.layout}")
+    print(f"Episodes: {args.episodes}")
+    print(f"Speed: {args.speed}s per frame")
+    print(f"{'#'*60}\n")
+    
+    # Load Pac-Man model
+    print("Loading Pac-Man model...")
+    if args.pacman_model.endswith('.zip'):
+        args.pacman_model = args.pacman_model[:-4]
+    
+    # Try direct path first
+    model_path = args.pacman_model
+    if not os.path.exists(model_path + ".zip"):
+        # Try looking in best_model subdirectory
+        best_path = os.path.join(model_path + "_best", "best_model")
+        if os.path.exists(best_path + ".zip"):
+            model_path = best_path
+            print(f"Found best model at: {best_path}")
+    
+    try:
+        pacman_model = PPO.load(model_path)
+        print(f"✓ Loaded Pac-Man model from {model_path}")
+    except Exception as e:
+        print(f"✗ Failed to load Pac-Man model: {e}")
+        return
+    
+    # Load ghost policies if specified
+    ghost_policies = None
+    if args.ghost_dir and args.ghost_version is not None:
+        print("\nLoading adversarial ghost models...")
+        ghost_policies = load_ghost_policies(
+            args.ghost_dir,
+            args.ghost_version,
+            args.num_ghosts
+        )
+    
+    # Determine ghost configuration
+    if ghost_policies:
+        ghost_type = None
+        num_ghosts = len(ghost_policies)
+        print(f"\nUsing {num_ghosts} adversarial ghost(s)")
+    else:
+        ghost_type = args.ghost_type
+        num_ghosts = args.num_ghosts
+        print(f"\nUsing {num_ghosts} {ghost_type} ghost(s)")
+    
+    # Create visualizer
+    visualizer = GameVisualizer(frame_time=args.speed)
+    
+    # Play games
+    print(f"\nStarting visualization ({args.episodes} episode(s))...")
+    print("Press Ctrl+C to stop early\n")
+    
+    try:
+        for episode in range(args.episodes):
+            visualizer.play_game(
+                pacman_model=pacman_model,
+                layout_name=args.layout,
+                ghost_policies=ghost_policies,
+                ghost_type=ghost_type,
+                num_ghosts=num_ghosts,
+                max_steps=args.max_steps,
+                deterministic=not args.stochastic,
+                show_stats=True
+            )
+            
+            # Pause between games
+            if episode < args.episodes - 1:
+                print(f"\nStarting next game in 2 seconds...")
+                time.sleep(2)
+    
+    except KeyboardInterrupt:
+        print("\n\nVisualization stopped by user.")
     
     # Print summary
-    print(f"\n\n{'='*60}")
-    print(f"SUMMARY ({n_episodes} episodes)")
-    print(f"{'='*60}")
-    print(f"  Pac-Man Wins:  {all_stats['pacman_wins']}/{n_episodes} " +
-          f"({100*all_stats['pacman_wins']/n_episodes:.1f}%)")
-    print(f"  Ghost Wins:    {all_stats['ghost_wins']}/{n_episodes} " +
-          f"({100*all_stats['ghost_wins']/n_episodes:.1f}%)")
-    print(f"  Timeouts:      {all_stats['timeouts']}/{n_episodes}")
-    print(f"  Avg Score:     {np.mean(all_stats['scores']):.1f} ± {np.std(all_stats['scores']):.1f}")
-    print(f"  Avg Steps:     {np.mean(all_stats['steps']):.1f}")
-    print(f"{'='*60}")
+    visualizer.print_summary()
+
+
+def compare_models(args):
+    """Compare two models side-by-side (sequentially)."""
+    print(f"\n{'#'*60}")
+    print("# COMPARING PAC-MAN MODELS")
+    print(f"{'#'*60}")
+    print(f"Model 1: {args.model1}")
+    print(f"Model 2: {args.model2}")
+    print(f"Episodes per model: {args.episodes}")
+    print(f"{'#'*60}\n")
     
-    # Save statistics to JSON
-    if record_video:
-        stats_path = os.path.join(video_folder, f"stats_v{ghost_version}.json")
-        with open(stats_path, 'w') as f:
-            json.dump(all_stats, f, indent=2)
-        print(f"\n✓ Statistics saved to: {stats_path}")
+    # Load models
+    print("Loading models...")
     
-    print("\nVisualization complete!")
+    if args.model1.endswith('.zip'):
+        args.model1 = args.model1[:-4]
+    if args.model2.endswith('.zip'):
+        args.model2 = args.model2[:-4]
     
-    return all_stats
+    try:
+        model1 = PPO.load(args.model1)
+        print(f"✓ Loaded Model 1")
+    except Exception as e:
+        print(f"✗ Failed to load Model 1: {e}")
+        return
+    
+    try:
+        model2 = PPO.load(args.model2)
+        print(f"✓ Loaded Model 2")
+    except Exception as e:
+        print(f"✗ Failed to load Model 2: {e}")
+        return
+    
+    # Play games with each model
+    print("\n" + "="*60)
+    print("Testing Model 1")
+    print("="*60)
+    
+    visualizer1 = GameVisualizer(frame_time=args.speed)
+    
+    for episode in range(args.episodes):
+        visualizer1.play_game(
+            pacman_model=model1,
+            layout_name=args.layout,
+            ghost_type=args.ghost_type,
+            num_ghosts=args.num_ghosts,
+            max_steps=args.max_steps,
+            deterministic=not args.stochastic,
+            show_stats=True
+        )
+        if episode < args.episodes - 1:
+            time.sleep(1)
+    
+    print("\n" + "="*60)
+    print("Testing Model 2")
+    print("="*60)
+    
+    visualizer2 = GameVisualizer(frame_time=args.speed)
+    
+    for episode in range(args.episodes):
+        visualizer2.play_game(
+            pacman_model=model2,
+            layout_name=args.layout,
+            ghost_type=args.ghost_type,
+            num_ghosts=args.num_ghosts,
+            max_steps=args.max_steps,
+            deterministic=not args.stochastic,
+            show_stats=True
+        )
+        if episode < args.episodes - 1:
+            time.sleep(1)
+    
+    # Print comparison
+    print("\n" + "#"*60)
+    print("# COMPARISON RESULTS")
+    print("#"*60)
+    
+    print(f"\nModel 1: {os.path.basename(args.model1)}")
+    print(f"  Win Rate: {100*visualizer1.stats['wins']/visualizer1.stats['games_played']:.1f}%")
+    print(f"  Avg Score: {visualizer1.stats['total_score']/visualizer1.stats['games_played']:.1f}")
+    
+    print(f"\nModel 2: {os.path.basename(args.model2)}")
+    print(f"  Win Rate: {100*visualizer2.stats['wins']/visualizer2.stats['games_played']:.1f}%")
+    print(f"  Avg Score: {visualizer2.stats['total_score']/visualizer2.stats['games_played']:.1f}")
+    
+    print("\n" + "#"*60 + "\n")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Visualize and record trained Pac-Man vs Ghosts'
+        description='Visualize trained Pac-Man agents in real-time',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Watch Stage 2 agent (vs random ghosts)
+  python visualize_agents.py \\
+      --pacman-model curriculum_output/run_*/models/pacman_random_ghosts_final \\
+      --episodes 5
+
+  # Watch adversarial agent (vs learned ghosts)
+  python visualize_agents.py \\
+      --pacman-model curriculum_output/run_*/models/pacman_adversarial_v2 \\
+      --ghost-dir curriculum_output/run_*/models \\
+      --ghost-version 2 \\
+      --episodes 3
+
+  # Slow motion (more time to see strategy)
+  python visualize_agents.py \\
+      --pacman-model path/to/model \\
+      --speed 0.2 \\
+      --episodes 1
+
+  # Compare two models
+  python visualize_agents.py --compare \\
+      --model1 curriculum_output/run_*/models/pacman_random_ghosts_final \\
+      --model2 curriculum_output/run_*/models/pacman_adversarial_v2 \\
+      --episodes 5
+        """
     )
     
-    # Model paths
-    parser.add_argument('--pacman-path', type=str, required=True,
+    # Mode selection
+    parser.add_argument('--compare', action='store_true',
+                       help='Compare two models (sequential visualization)')
+    
+    # Single model mode
+    parser.add_argument('--pacman-model', type=str,
                        help='Path to Pac-Man model (without .zip)')
-    parser.add_argument('--ghost-dir', type=str, required=True,
-                       help='Directory containing ghost models')
-    parser.add_argument('--ghost-version', type=int, required=True,
-                       help='Ghost version number to load')
+    
+    # Comparison mode
+    parser.add_argument('--model1', type=str,
+                       help='Path to first model for comparison')
+    parser.add_argument('--model2', type=str,
+                       help='Path to second model for comparison')
+    
+    # Ghost configuration
+    parser.add_argument('--ghost-dir', type=str,
+                       help='Directory with trained ghost models (for adversarial)')
+    parser.add_argument('--ghost-version', type=int,
+                       help='Ghost version number (for adversarial)')
+    parser.add_argument('--ghost-type', type=str, default='random',
+                       choices=['random', 'directional'],
+                       help='Ghost type for scripted ghosts (default: random)')
+    parser.add_argument('--num-ghosts', type=int, default=4,
+                       help='Number of ghosts (default: 4)')
     
     # Environment settings
     parser.add_argument('--layout', type=str, default='mediumClassic',
                        help='Map layout (default: mediumClassic)')
-    parser.add_argument('--num-ghosts', type=int, default=2,
-                       help='Number of ghosts (default: 2)')
+    parser.add_argument('--max-steps', type=int, default=500,
+                       help='Maximum steps per game (default: 500)')
     
     # Visualization settings
-    parser.add_argument('--episodes', type=int, default=5,
-                       help='Number of episodes to visualize (default: 5)')
-    parser.add_argument('--frame-delay', type=float, default=0.05,
-                       help='Delay between frames in seconds (default: 0.05)')
-    
-    # Video recording
-    parser.add_argument('--record', action='store_true',
-                       help='Record episodes as text replay')
-    parser.add_argument('--video-folder', type=str, default='videos',
-                       help='Folder to save videos (default: videos)')
-    parser.add_argument('--video-fps', type=int, default=10,
-                       help='Video frames per second (default: 10)')
+    parser.add_argument('--episodes', type=int, default=1,
+                       help='Number of games to play (default: 1)')
+    parser.add_argument('--speed', type=float, default=0.1,
+                       help='Time between frames in seconds (default: 0.1)')
+    parser.add_argument('--stochastic', action='store_true',
+                       help='Use stochastic policy (default: deterministic)')
     
     args = parser.parse_args()
     
-    visualize_game(
-        pacman_model_path=args.pacman_path,
-        ghost_model_dir=args.ghost_dir,
-        ghost_version=args.ghost_version,
-        layout_name=args.layout,
-        num_ghosts=args.num_ghosts,
-        n_episodes=args.episodes,
-        frame_delay=args.frame_delay,
-        record_video=args.record,
-        video_folder=args.video_folder,
-        video_fps=args.video_fps
-    )
+    # Validate arguments
+    if args.compare:
+        if not args.model1 or not args.model2:
+            parser.error("--model1 and --model2 required for --compare mode")
+        compare_models(args)
+    else:
+        if not args.pacman_model:
+            parser.error("--pacman-model required (or use --compare mode)")
+        visualize_single_model(args)
 
-
-def create_gif_from_game(
-    pacman_model_path,
-    ghost_model_dir,
-    ghost_version,
-    layout_name='mediumClassic',
-    num_ghosts=2,
-    output_path='game.gif',
-    max_steps=200,
-    fps=5
-):
-    """
-    Create a GIF animation of a single game.
-    
-    This uses matplotlib to render each frame as an image.
-    """
-    try:
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
-        from matplotlib.animation import FuncAnimation, PillowWriter
-    except ImportError:
-        print("Installing matplotlib...")
-        import subprocess
-        subprocess.check_call(['pip', 'install', 'matplotlib', 'pillow'])
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
-        from matplotlib.animation import FuncAnimation, PillowWriter
-    
-    # Load models
-    print(f"Loading models...")
-    pacman_model = PPO.load(pacman_model_path)
-    
-    ghost_models = {}
-    for i in range(1, num_ghosts + 1):
-        ghost_path = os.path.join(ghost_model_dir, f"ghost_{i}_v{ghost_version}")
-        if os.path.exists(ghost_path + ".zip"):
-            ghost_models[i] = DQN.load(ghost_path)
-    
-    # Create environment
-    env = PacmanEnv(
-        layout_name=layout_name,
-        ghost_policies=ghost_models,
-        max_steps=max_steps,
-        render_mode=None,
-        reward_shaping=False
-    )
-    
-    # Collect all frames
-    print(f"Running game and collecting frames...")
-    frames = []
-    
-    obs, _ = env.reset()
-    done = False
-    
-    while not done:
-        # Capture current state
-        state = env.game_state
-        frames.append({
-            'walls': state.getWalls(),
-            'food': state.getFood(),
-            'pacman_pos': state.getPacmanPosition(),
-            'ghost_positions': state.getGhostPositions(),
-            'score': state.getScore()
-        })
-        
-        # Take action
-        action, _ = pacman_model.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-    
-    env.close()
-    
-    print(f"Collected {len(frames)} frames. Creating GIF...")
-    
-    # Create animation
-    fig, ax = plt.subplots(figsize=(10, 10))
-    
-    def draw_frame(frame_idx):
-        ax.clear()
-        frame = frames[frame_idx]
-        
-        # Get dimensions
-        walls = frame['walls']
-        width = walls.width
-        height = walls.height
-        
-        # Set up plot
-        ax.set_xlim(-0.5, width - 0.5)
-        ax.set_ylim(-0.5, height - 0.5)
-        ax.set_aspect('equal')
-        ax.set_title(f"Step {frame_idx + 1}/{len(frames)} | Score: {frame['score']:.0f}")
-        ax.axis('off')
-        
-        # Draw walls
-        for x in range(width):
-            for y in range(height):
-                if walls[x][y]:
-                    rect = patches.Rectangle((x-0.5, y-0.5), 1, 1, 
-                                             linewidth=0, facecolor='blue')
-                    ax.add_patch(rect)
-        
-        # Draw food
-        food = frame['food']
-        for x in range(width):
-            for y in range(height):
-                if food[x][y]:
-                    circle = patches.Circle((x, y), 0.1, color='white')
-                    ax.add_patch(circle)
-        
-        # Draw Pac-Man
-        pacman_x, pacman_y = frame['pacman_pos']
-        pacman = patches.Circle((pacman_x, pacman_y), 0.4, color='yellow')
-        ax.add_patch(pacman)
-        
-        # Draw ghosts
-        colors = ['red', 'cyan', 'pink', 'orange']
-        for i, (gx, gy) in enumerate(frame['ghost_positions']):
-            ghost = patches.Circle((gx, gy), 0.4, color=colors[i % len(colors)])
-            ax.add_patch(ghost)
-    
-    # Create animation
-    anim = FuncAnimation(fig, draw_frame, frames=len(frames), 
-                        interval=1000/fps, repeat=True)
-    
-    # Save as GIF
-    writer = PillowWriter(fps=fps)
-    anim.save(output_path, writer=writer)
-    
-    plt.close()
-    
-    print(f"✓ GIF saved to: {output_path}")
-    
-    return output_path
 
 if __name__ == '__main__':
     main()
