@@ -106,10 +106,11 @@ def train_ghost_sequential(
 
         try:
             model = DQN.load(prev_model_path, env=env)
-            model.learning_rate = 1e-3
-            model.exploration_rate = 0.1
+            # Use lower learning rate for refinement to avoid catastrophic forgetting
+            model.learning_rate = 5e-4
+            model.exploration_rate = 0.15  # Keep some exploration
             timesteps = refinement_timesteps
-            print(f"Refining for {timesteps:,} timesteps")
+            print(f"Refining for {timesteps:,} timesteps (lr=5e-4)")
         except Exception as e:
             print("Failed to load model, creating new model instead")
             
@@ -229,8 +230,12 @@ def train_pacman(
         print(f"Loading Pac-Man v{prev_version} for continued training...")
         try:
             model = MaskablePPO.load(prev_model_path, env=env)
+            # Use conservative updates to avoid forgetting how to beat random ghosts
+            model.learning_rate = 1e-4  # Lower LR for fine-tuning
+            model.clip_range = lambda _: 0.1  # Smaller clip range = more conservative (must be callable)
+            model.ent_coef = 0.02  # Less exploration when refining
             timesteps = refinement_timesteps
-            print(f"Refining for {timesteps:,} timesteps")
+            print(f"Refining for {timesteps:,} timesteps (conservative: lr=1e-4, clip=0.1)")
         except Exception as e:
             print(f"Failed to load model: {e}, creating new model instead")
             model = MaskablePPO(
@@ -363,6 +368,50 @@ def evaluate_matchup(pacman_model, ghost_models, layout_name, n_episodes=20):
     print(f"{'='*60}")
     
     return stats
+
+def evaluate_vs_random_ghosts(pacman_model, layout_name, n_episodes=50):
+    """
+    Evaluate Pac-Man against random ghosts to check for regression.
+    This is a sanity check to ensure adversarial training doesn't hurt general performance.
+    """
+    print(f"\n{'─'*60}")
+    print(f"Sanity Check: Pac-Man vs Random Ghosts ({n_episodes} episodes)")
+    print(f"{'─'*60}")
+    
+    env = PacmanEnv(
+        layout_name=layout_name,
+        ghost_type='random',
+        max_steps=500,
+        render_mode=None
+    )
+    
+    wins = 0
+    for episode in range(n_episodes):
+        obs, _ = env.reset()
+        done = False
+        
+        while not done:
+            action_masks = env.action_masks()
+            action, _ = pacman_model.predict(obs, deterministic=True, action_masks=action_masks)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+        
+        if info.get('win', False):
+            wins += 1
+    
+    env.close()
+    
+    win_rate = wins / n_episodes
+    print(f"  Win Rate vs Random: {wins}/{n_episodes} = {100*win_rate:.1f}%")
+    
+    if win_rate < 0.70:
+        print(f"WARNING: Performance dropped below 70%!")
+    elif win_rate < 0.80:
+        print(f"CAUTION: Performance dropped below 80%")
+    else:
+        print(f"Good: Maintaining strong random ghost performance")
+    
+    return win_rate
 
 
 def train_adversarial_rl(
@@ -522,6 +571,13 @@ def train_adversarial_rl(
                 layout_name=layout_name,
                 n_episodes=eval_episodes
             )
+            
+            random_win_rate = evaluate_vs_random_ghosts(
+                pacman_model=pacman_model,
+                layout_name=layout_name,
+                n_episodes=30
+            )
+            stats['random_ghost_win_rate'] = random_win_rate
             
             history['evaluations'].append({
                 'round': round_num,
