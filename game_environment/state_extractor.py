@@ -119,17 +119,20 @@ def extract_pacman_observation(game_state, original_food_count):
 def extract_ghost_observation(game_state, ghost_index):
     """Extract ghost-centric state features for training ghost agents.
     
-    Feature vector layout:
+    Enhanced 25-dimensional feature vector:
         [0-1]   This ghost's position (x, y) normalized
         [2-3]   This ghost's scared state (flag, timer_normalized)
         [4-5]   Pac-Man position (x, y) normalized
         [6-7]   Relative position to Pac-Man (dx, dy) normalized
         [8]     Manhattan distance to Pac-Man normalized
+        [9-12]  Wall sensors in 4 directions (N, S, E, W)
+        [13-16] Legal action flags (N, S, E, W)
+        [17-20] Other ghost relative positions (up to 3 other ghosts, 1 value each = closest dist)
+        [21-24] Direction to Pac-Man one-hot (N, S, E, W)
     
     Returns:
-        np.ndarray: Feature vector with all values in [-1, 1], dtype float32
+        np.ndarray: Feature vector with all values in [0, 1], dtype float32
     """
-    # Validate ghost index
     if ghost_index == 0:
         raise ValueError("ghost_index=0 is Pac-Man, not a ghost. Use index >= 1.")
     if ghost_index >= game_state.getNumAgents():
@@ -139,32 +142,73 @@ def extract_ghost_observation(game_state, ghost_index):
     layout = game_state.data.layout
     width = layout.width
     height = layout.height
+    walls = game_state.getWalls()
+    max_dist = width + height
     
     state = []
     
-    # 1. This ghost's position
+    # [0-1] This ghost's position
     ghost_pos = game_state.getGhostPosition(ghost_index)
-    state.extend([ghost_pos[0] / width, ghost_pos[1] / height]) # normalized
+    state.extend([ghost_pos[0] / width, ghost_pos[1] / height])
     
-    # 2. This ghost's scared state
+    # [2-3] This ghost's scared state
     ghost_state = game_state.getGhostState(ghost_index)
     state.extend([
         1.0 if ghost_state.scaredTimer > 0 else 0.0,
         ghost_state.scaredTimer / 40.0
     ])
     
-    # 3. Pac-Man position
+    # [4-5] Pac-Man position
     pacman_pos = game_state.getPacmanPosition()
     state.extend([pacman_pos[0] / width, pacman_pos[1] / height])
     
-    # 4. Relative position to Pac-Man
+    # [6-7] Relative position to Pac-Man
     rel_x = (pacman_pos[0] - ghost_pos[0]) / width
     rel_y = (pacman_pos[1] - ghost_pos[1]) / height
     state.extend([rel_x, rel_y])
     
-    # 5. Manhattan distance to Pac-Man
+    # [8] Manhattan distance to Pac-Man
     dist = manhattanDistance(ghost_pos, pacman_pos)
-    state.append(dist / (width + height))
+    state.append(dist / max_dist)
+    
+    # [9-12] Wall sensors in 4 directions (N, S, E, W)
+    gx, gy = int(ghost_pos[0]), int(ghost_pos[1])
+    directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+    for dx, dy in directions:
+        nx, ny = gx + dx, gy + dy
+        if 0 <= nx < width and 0 <= ny < height:
+            state.append(1.0 if walls[nx][ny] else 0.0)
+        else:
+            state.append(1.0)
+    
+    # [13-16] Legal action flags
+    legal_actions = game_state.getLegalActions(ghost_index)
+    action_dirs = [Directions.NORTH, Directions.SOUTH, Directions.EAST, Directions.WEST]
+    for d in action_dirs:
+        state.append(1.0 if d in legal_actions else 0.0)
+    
+    # [17-20] Other ghost distances (normalized)
+    num_agents = game_state.getNumAgents()
+    other_ghost_dists = []
+    for i in range(1, num_agents):
+        if i != ghost_index:
+            other_pos = game_state.getGhostPosition(i)
+            d = manhattanDistance(ghost_pos, other_pos) / max_dist
+            other_ghost_dists.append(d)
+    
+    while len(other_ghost_dists) < 4:
+        other_ghost_dists.append(1.0)
+    state.extend(other_ghost_dists[:4])
+    
+    # [21-24] Direction to Pac-Man one-hot
+    dx = pacman_pos[0] - ghost_pos[0]
+    dy = pacman_pos[1] - ghost_pos[1]
+    dir_to_pacman = [0.0, 0.0, 0.0, 0.0]
+    if abs(dy) >= abs(dx):
+        dir_to_pacman[0 if dy > 0 else 1] = 1.0
+    else:
+        dir_to_pacman[2 if dx > 0 else 3] = 1.0
+    state.extend(dir_to_pacman)
     
     return np.array(state, dtype=np.float32)
 

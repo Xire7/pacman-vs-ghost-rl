@@ -30,14 +30,12 @@ class IndependentGhostEnv(gym.Env):
         
         self.pacman_env = PacmanEnv(
             layout_name=layout_name,
-            ghost_agents=None,
             max_steps=max_steps,
-            render_mode=render_mode,
-            reward_shaping=False
+            render_mode=render_mode
         )
         
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32
+            low=0.0, high=1.0, shape=(25,), dtype=np.float32
         )
         
         self.action_space = spaces.Discrete(4)
@@ -82,12 +80,23 @@ class IndependentGhostEnv(gym.Env):
         # Execute Pac-Man move
         legal_pacman = self.game_state.getLegalActions(0)
         if self.pacman_policy is not None:
-            pacman_obs = extract_pacman_observation(
-                self.game_state, self.pacman_env.original_food
+            # Sync pacman_env state and get 53-dim observation
+            self.pacman_env.game_state = self.game_state
+            pacman_obs = self.pacman_env._get_observation()
+            
+            # Get action masks
+            action_masks = self.pacman_env.action_masks()
+            
+            # Get action with masking
+            pacman_action, _ = self.pacman_policy.predict(
+                pacman_obs, deterministic=False, action_masks=action_masks
             )
-            pacman_direction = get_best_legal_action(
-                self.pacman_policy, pacman_obs, legal_pacman
-            )
+            action_to_dir = {0: Directions.NORTH, 1: Directions.SOUTH, 
+                             2: Directions.EAST, 3: Directions.WEST, 4: Directions.STOP}
+            pacman_direction = action_to_dir[int(pacman_action)]
+            
+            if pacman_direction not in legal_pacman:
+                pacman_direction = np.random.choice(legal_pacman)
         else:
             pacman_direction = np.random.choice(legal_pacman)
         
@@ -133,7 +142,7 @@ class IndependentGhostEnv(gym.Env):
         if not terminated and not truncated:
             ghost_obs = extract_ghost_observation(self.game_state, self.ghost_index)
         else:
-            ghost_obs = np.zeros(9, dtype=np.float32)
+            ghost_obs = np.zeros(25, dtype=np.float32)
         
         info = {
             'ghost_won': self.game_state.isLose(),

@@ -2,7 +2,7 @@
 Iterative Freeze Training Script for Pac-Man vs Ghosts
 
 This script implements adversarial RL with:
-- PPO for Pac-Man (strategic, policy-based)
+- MaskablePPO for Pac-Man (strategic, policy-based with action masking)
 - Independent DQN for each Ghost (reactive, value-based)
 - Sequential within-round training with rotation
 - Iterative freezing between rounds
@@ -19,11 +19,15 @@ Usage:
 import argparse
 import os
 import numpy as np
+import torch
 from datetime import datetime
-from stable_baselines3 import PPO, DQN
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.wrappers import ActionMasker
+from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+from stable_baselines3 import DQN
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from ghost_agent import IndependentGhostEnv
-from gym_env import PacmanEnv
+from gym_env import PacmanEnv, make_masked_pacman_env
 
 
 def create_directories(base_dir="training_output"):
@@ -181,7 +185,7 @@ def train_pacman(
     reward_shaping=False
 ):
     """
-    Train Pac-Man with PPO against current ghost policies.
+    Train Pac-Man with MaskablePPO against current ghost policies.
     
     Args:
         round_num: Current round number
@@ -193,71 +197,76 @@ def train_pacman(
         refinement_timesteps: Training steps for subsequent rounds
     
     Returns:
-        Trained PPO model for Pac-Man
+        Trained MaskablePPO model for Pac-Man
     """
     print(f"\n{'═'*60}")
-    print(f"Training Pac-Man")
+    print(f"Training Pac-Man (MaskablePPO)")
     print(f"{'═'*60}")
     
     version = round_num // 2
     
-    # Create Pac-Man environment with trained ghosts
-    env = PacmanEnv(
-        layout_name=layout_name,
-        ghost_policies=ghost_models,
-        max_steps=500,
-        render_mode=None,
-        reward_shaping=reward_shaping
-    )
+    # Create Pac-Man environment with trained ghosts and action masking
+    def make_env():
+        env = PacmanEnv(
+            layout_name=layout_name,
+            ghost_policies=ghost_models,
+            max_steps=500,
+            render_mode=None
+        )
+        return ActionMasker(env, lambda e: e.action_masks())
     
-    # Load previous version or create new model
+    env = make_env()
+    
+    policy_kwargs = {
+        'net_arch': dict(pi=[512, 256, 128], vf=[512, 256, 128]),
+        'activation_fn': torch.nn.Tanh,
+    }
+    
     prev_version = version - 1
     prev_model_path = os.path.join(dirs['models'], f"pacman_v{prev_version}")
     
     if os.path.exists(prev_model_path + ".zip"):
         print(f"Loading Pac-Man v{prev_version} for continued training...")
-
         try:
-            model = PPO.load(prev_model_path, env=env)
+            model = MaskablePPO.load(prev_model_path, env=env)
             timesteps = refinement_timesteps
             print(f"Refining for {timesteps:,} timesteps")
         except Exception as e:
             print(f"Failed to load model: {e}, creating new model instead")
-            model = PPO(
-                "MlpPolicy",
-                env,
+            model = MaskablePPO(
+                "MlpPolicy", env,
                 learning_rate=3e-4,
-                n_steps=2048,
-                batch_size=64,
-                n_epochs=10,
+                n_steps=512,
+                batch_size=128,
+                n_epochs=4,
                 gamma=0.99,
                 gae_lambda=0.95,
                 clip_range=0.2,
-                ent_coef=0.01,
+                ent_coef=0.05,
+                policy_kwargs=policy_kwargs,
                 verbose=1,
                 tensorboard_log=os.path.join(dirs['logs'], "pacman")
             )
             timesteps = initial_timesteps
     else:
-        print(f"Creating new PPO model for Pac-Man...")
-        model = PPO(
-            "MlpPolicy",
-            env,
+        print(f"Creating new MaskablePPO model for Pac-Man...")
+        model = MaskablePPO(
+            "MlpPolicy", env,
             learning_rate=3e-4,
-            n_steps=2048,
-            batch_size=64,
-            n_epochs=10,
+            n_steps=512,
+            batch_size=128,
+            n_epochs=4,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=0.01,
+            ent_coef=0.05,
+            policy_kwargs=policy_kwargs,
             verbose=1,
             tensorboard_log=os.path.join(dirs['logs'], "pacman")
         )
         timesteps = initial_timesteps
         print(f"Training from scratch for {timesteps:,} timesteps")
     
-    # Setup callbacks
     checkpoint_callback = CheckpointCallback(
         save_freq=10000,
         save_path=os.path.join(dirs['checkpoints'], f"pacman_v{version}"),
@@ -265,7 +274,6 @@ def train_pacman(
         save_replay_buffer=False
     )
     
-    # Train
     print(f"Opponents: Ghosts v{version}")
     model.learn(
         total_timesteps=timesteps,
@@ -298,8 +306,7 @@ def evaluate_matchup(pacman_model, ghost_models, layout_name, n_episodes=20):
         layout_name=layout_name,
         ghost_policies=ghost_models,
         max_steps=500,
-        render_mode=None,
-        reward_shaping=False
+        render_mode=None
     )
     
     pacman_wins = 0
@@ -314,7 +321,8 @@ def evaluate_matchup(pacman_model, ghost_models, layout_name, n_episodes=20):
         steps = 0
         
         while not done:
-            action, _ = pacman_model.predict(obs, deterministic=True)
+            action_masks = env.action_masks()
+            action, _ = pacman_model.predict(obs, deterministic=True, action_masks=action_masks)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             steps += 1
@@ -322,14 +330,11 @@ def evaluate_matchup(pacman_model, ghost_models, layout_name, n_episodes=20):
         if info.get('win', False):
             pacman_wins += 1
             result = "Pac-Man"
-        elif info.get('lose', False):
+        else:
             ghost_wins += 1
             result = "Ghosts"
-        else:
-            timeouts += 1
-            result = "Timeout"
         
-        scores.append(info.get('raw_score', 0))
+        scores.append(info.get('score', 0))
         episode_lengths.append(steps)
         
         if (episode + 1) % 5 == 0:
@@ -369,7 +374,8 @@ def train_adversarial_rl(
     pacman_initial_timesteps=100000,
     pacman_refinement_timesteps=50000,
     eval_frequency=2,
-    eval_episodes=20
+    eval_episodes=20,
+    pretrained_pacman_path=None
 ):
     """
     Main adversarial RL training loop with sequential ghost updates and rotation.
@@ -384,6 +390,7 @@ def train_adversarial_rl(
         pacman_refinement_timesteps: Training steps for Pac-Man refinement
         eval_frequency: Evaluate every N rounds
         eval_episodes: Number of episodes for evaluation
+        pretrained_pacman_path: Path to pretrained Pac-Man model (optional)
     
     Returns:
         tuple: (final_pacman_model, final_ghost_models, training_history)
@@ -417,26 +424,34 @@ def train_adversarial_rl(
     dirs = create_directories()
     print(f"Output directory: {os.path.dirname(dirs['models'])}\n")
     
-    # ========== INITIAL TRAINING: Pac-Man vs Random Ghosts ==========
-    print(f"\n{'='*60}")
-    print(f"INITIAL TRAINING: Pac-Man vs Random Ghosts")
-    print(f"{'='*60}\n")
-
     ghost_models = {i: None for i in range(1, num_ghosts + 1)}
-
-    # Initialize models (None = random policy)
-    pacman_model = train_pacman(
-        round_num=0,
-        pacman_model=None,
-        ghost_models=ghost_models, 
-        layout_name=layout_name,
-        dirs=dirs,
-        initial_timesteps=pacman_initial_timesteps,
-        refinement_timesteps=0,
-        reward_shaping=True
-    )
-
-    print(f"\n Pac-Man v1 trained against random ghosts")
+    
+    # ========== INITIAL PAC-MAN: Load pretrained or train from scratch ==========
+    if pretrained_pacman_path and os.path.exists(pretrained_pacman_path):
+        print(f"\n{'='*60}")
+        print(f"LOADING PRETRAINED PAC-MAN")
+        print(f"{'='*60}\n")
+        print(f"Loading from: {pretrained_pacman_path}")
+        pacman_model = MaskablePPO.load(pretrained_pacman_path)
+        print(f"✓ Pretrained Pac-Man loaded successfully")
+        
+        # Copy to models directory
+        pacman_model.save(os.path.join(dirs['models'], "pacman_v0"))
+    else:
+        print(f"\n{'='*60}")
+        print(f"INITIAL TRAINING: Pac-Man vs Random Ghosts")
+        print(f"{'='*60}\n")
+        
+        pacman_model = train_pacman(
+            round_num=0,
+            pacman_model=None,
+            ghost_models=ghost_models, 
+            layout_name=layout_name,
+            dirs=dirs,
+            initial_timesteps=pacman_initial_timesteps,
+            refinement_timesteps=0
+        )
+        print(f"\n✓ Pac-Man v0 trained against random ghosts")
     
     # Training history
     history = {
@@ -559,6 +574,10 @@ def main():
     parser.add_argument('--pacman-refine-steps', type=int, default=50000,
                        help='Pac-Man refinement timesteps (default: 50000)')
     
+    # Pretrained model
+    parser.add_argument('--pretrained-pacman', type=str, default=None,
+                       help='Path to pretrained Pac-Man model to start from')
+    
     # Evaluation parameters
     parser.add_argument('--eval-freq', type=int, default=2,
                        help='Evaluate every N rounds (default: 2)')
@@ -577,7 +596,8 @@ def main():
         pacman_initial_timesteps=args.pacman_initial_steps,
         pacman_refinement_timesteps=args.pacman_refine_steps,
         eval_frequency=args.eval_freq,
-        eval_episodes=args.eval_episodes
+        eval_episodes=args.eval_episodes,
+        pretrained_pacman_path=args.pretrained_pacman
     )
     
     # Final evaluation

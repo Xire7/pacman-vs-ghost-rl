@@ -139,7 +139,8 @@ def train(args):
     print(f"Training PPO on {args.layout}")
     print(f"Timesteps: {args.timesteps:,} | Envs: {args.num_envs}")
     print(f"Device: {device} | Normalize: {args.normalize}")
-    print(f"n_steps: 512 | batch_size: 128 | clip_range: 0.2")
+    print(f"n_steps: {args.n_steps} | batch_size: {args.batch_size} | clip_range: {args.clip_range}")
+    print(f"n_epochs: {args.n_epochs} | gamma: {args.gamma} | target_kl: {args.target_kl}")
     print(f"{'='*60}\n")
     
     env = create_env(args.layout, args.ghost_type, args.num_envs, args.max_steps, 
@@ -158,6 +159,7 @@ def train(args):
     policy_kwargs = {
         'net_arch': dict(pi=args.net_arch, vf=args.net_arch),
         'activation_fn': torch.nn.Tanh,
+        'ortho_init': True,  # Orthogonal initialization (recommended by research)
     }
     
     if args.resume:
@@ -184,13 +186,16 @@ def train(args):
         model = MaskablePPO(
             'MlpPolicy', env,
             learning_rate=lr,
-            n_steps=512,
-            batch_size=128,
-            n_epochs=4,
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_range=0.2, 
+            n_steps=args.n_steps,
+            batch_size=args.batch_size,
+            n_epochs=args.n_epochs,
+            gamma=args.gamma,
+            gae_lambda=args.gae_lambda,
+            clip_range=args.clip_range,
             ent_coef=args.ent_coef,
+            vf_coef=args.vf_coef,
+            max_grad_norm=0.5,
+            target_kl=args.target_kl,  # Early stopping on KL divergence
             policy_kwargs=policy_kwargs,
             tensorboard_log=log_dir,
             verbose=1,
@@ -270,11 +275,27 @@ def main():
     parser.add_argument('--max-steps', type=int, default=500)
     parser.add_argument('--timesteps', type=int, default=500000)
     parser.add_argument('--num-envs', type=int, default=8)
+    
+    # Learning rate settings
     parser.add_argument('--lr-decay', action='store_true', help='Enable linear LR decay')
     parser.add_argument('--lr', type=float, default=2.5e-4, help='Initial learning rate')
     parser.add_argument('--lr-final', type=float, default=1e-5, help='Final LR when using decay')
-    parser.add_argument('--ent-coef', type=float, default=0.05, help='Entropy coefficient')
-    parser.add_argument('--net-arch', type=int, nargs='+', default=[256, 128], help='Network architecture (e.g., --net-arch 512 256 128)')
+    
+    # PPO hyperparameters (research-backed defaults for stability)
+    parser.add_argument('--n-steps', type=int, default=256, help='Steps per env per update (smaller = faster updates)')
+    parser.add_argument('--batch-size', type=int, default=64, help='Minibatch size (n_steps*n_envs should be divisible)')
+    parser.add_argument('--n-epochs', type=int, default=10, help='Number of PPO epochs per update')
+    parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor')
+    parser.add_argument('--gae-lambda', type=float, default=0.95, help='GAE lambda')
+    parser.add_argument('--clip-range', type=float, default=0.1, help='PPO clip range (0.1-0.2 recommended)')
+    parser.add_argument('--ent-coef', type=float, default=0.01, help='Entropy coefficient (lower=less exploration)')
+    parser.add_argument('--vf-coef', type=float, default=0.5, help='Value function coefficient')
+    parser.add_argument('--target-kl', type=float, default=0.02, help='Target KL divergence for early stopping')
+    
+    # Network architecture
+    parser.add_argument('--net-arch', type=int, nargs='+', default=[256, 256], help='Network architecture (e.g., --net-arch 256 256)')
+    
+    # Other settings
     parser.add_argument('--normalize', action='store_true', help='Use VecNormalize for obs/reward normalization')
     parser.add_argument('--cpu', action='store_true', help='Force CPU training (faster for small networks)')
     parser.add_argument('--resume', type=str, help='Resume from model path')
