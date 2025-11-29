@@ -90,13 +90,14 @@ class PacmanEnv(gym.Env):
             return [RandomGhost(i + 1) for i in range(self.num_ghosts)]
     
     def _init_display(self):
-        """Initialize display for rendering."""
-        if self._display_initialized:
-            return
+        """Initialize or reinitialize display for rendering."""
         if self.render_mode == "human":
-            self.display = PacmanGraphics(zoom=1.0, frameTime=self.frame_time)
-            self.display.initialize(self.game_state.data)
-            self._display_initialized = True
+            if self._display_initialized and self.display:
+                self.display.initialize(self.game_state.data)
+            else:
+                self.display = PacmanGraphics(zoom=1.0, frameTime=self.frame_time)
+                self.display.initialize(self.game_state.data)
+                self._display_initialized = True
     
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
         """Reset the environment."""
@@ -119,11 +120,8 @@ class PacmanEnv(gym.Env):
         self.prev_capsule_count = len(self.game_state.getCapsules())
         self.prev_distance_to_food = self._get_min_food_distance()
         
-        # Initialize display if needed
         if self.render_mode == "human":
             self._init_display()
-            if self.display:
-                self.display.update(self.game_state.data)
         
         return self._get_observation(), {}
     
@@ -142,6 +140,9 @@ class PacmanEnv(gym.Env):
         # Execute Pacman's action
         self.game_state = self.game_state.generatePacmanSuccessor(direction)
         
+        if self.render_mode == "human" and self.display:
+            self.display.update(self.game_state.data)
+        
         # Execute ghost actions
         for ghost_idx in range(1, self.num_ghosts + 1):
             if self.game_state.isWin() or self.game_state.isLose():
@@ -149,10 +150,9 @@ class PacmanEnv(gym.Env):
             ghost_agent = self._create_ghosts()[ghost_idx - 1]
             ghost_action = ghost_agent.getAction(self.game_state)
             self.game_state = self.game_state.generateSuccessor(ghost_idx, ghost_action)
-        
-        # Update display
-        if self.render_mode == "human" and self.display:
-            self.display.update(self.game_state.data)
+            
+            if self.render_mode == "human" and self.display:
+                self.display.update(self.game_state.data)
         
         reward = self._calculate_reward()
         
@@ -348,9 +348,8 @@ class PacmanEnv(gym.Env):
         return mask
     
     def render(self):
-        """Render the environment."""
-        if self.render_mode == "human" and self.display:
-            self.display.update(self.game_state.data)
+        """Render the environment. Display is updated during step()."""
+        pass
     
     def close(self):
         """Clean up resources."""
