@@ -23,16 +23,7 @@ from gym_env import make_masked_pacman_env
 
 
 def linear_schedule(initial_value: float, final_value: float = 1e-5) -> Callable[[float], float]:
-    """
-    Linear learning rate schedule.
-    
-    Args:
-        initial_value: Initial learning rate
-        final_value: Final learning rate (default 1e-5)
-    
-    Returns:
-        Schedule function that takes progress (1.0 -> 0.0) and returns LR
-    """
+    """Linear learning rate schedule from initial to final value."""
     def schedule(progress_remaining: float) -> float:
         return final_value + progress_remaining * (initial_value - final_value)
     return schedule
@@ -159,7 +150,7 @@ def train(args):
     policy_kwargs = {
         'net_arch': dict(pi=args.net_arch, vf=args.net_arch),
         'activation_fn': torch.nn.Tanh,
-        'ortho_init': True,  # Orthogonal initialization (recommended by research)
+        'ortho_init': True,
     }
     
     if args.resume:
@@ -281,16 +272,16 @@ def main():
     parser.add_argument('--lr', type=float, default=2.5e-4, help='Initial learning rate')
     parser.add_argument('--lr-final', type=float, default=1e-5, help='Final LR when using decay')
     
-    # PPO hyperparameters (research-backed defaults for stability)
-    parser.add_argument('--n-steps', type=int, default=256, help='Steps per env per update (smaller = faster updates)')
-    parser.add_argument('--batch-size', type=int, default=64, help='Minibatch size (n_steps*n_envs should be divisible)')
-    parser.add_argument('--n-epochs', type=int, default=10, help='Number of PPO epochs per update')
+    # PPO hyperparameters
+    parser.add_argument('--n-steps', type=int, default=256, help='Steps per env per update')
+    parser.add_argument('--batch-size', type=int, default=64, help='Minibatch size')
+    parser.add_argument('--n-epochs', type=int, default=10, help='PPO epochs per update')
     parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor')
     parser.add_argument('--gae-lambda', type=float, default=0.95, help='GAE lambda')
-    parser.add_argument('--clip-range', type=float, default=0.1, help='PPO clip range (0.1-0.2 recommended)')
-    parser.add_argument('--ent-coef', type=float, default=0.01, help='Entropy coefficient (lower=less exploration)')
+    parser.add_argument('--clip-range', type=float, default=0.1, help='PPO clip range')
+    parser.add_argument('--ent-coef', type=float, default=0.01, help='Entropy coefficient')
     parser.add_argument('--vf-coef', type=float, default=0.5, help='Value function coefficient')
-    parser.add_argument('--target-kl', type=float, default=0.02, help='Target KL divergence for early stopping')
+    parser.add_argument('--target-kl', type=float, default=0.02, help='Target KL for early stopping')
     
     # Network architecture
     parser.add_argument('--net-arch', type=int, nargs='+', default=[256, 256], help='Network architecture (e.g., --net-arch 256 256)')

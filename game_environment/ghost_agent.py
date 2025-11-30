@@ -7,21 +7,11 @@ from state_extractor import extract_ghost_observation, extract_pacman_observatio
 from gym_env import PacmanEnv
 
 class IndependentGhostEnv(gym.Env):
-    """
-    Environment that trains each ghost with its own DQN.
-    
-    Key insight: Instead of one network controlling all ghosts,
-    we have 4 separate networks, each seeing only their own ghost's perspective.
-    """
+    """Environment for training individual ghost agents with DQN."""
     
     def __init__(self, ghost_index, layout_name='mediumClassic', 
                  pacman_policy=None, other_ghost_policies=None, 
                  render_mode=None, max_steps=500):
-        """
-        Args:
-            ghost_index: Which ghost this environment controls (1, 2, 3, or 4)
-            other_ghost_policies: Dict of {ghost_idx: trained_model} for other ghosts
-        """
         super().__init__()
         
         self.ghost_index = ghost_index
@@ -43,6 +33,7 @@ class IndependentGhostEnv(gym.Env):
         self.game_state = None
         self.steps = 0
         self.prev_ghost_distances = {}
+        self.prev_dist_to_pacman = float('inf')
     
     def reset(self, *, seed=None, options=None):
         """Reset and return this ghost's observation."""
@@ -53,17 +44,11 @@ class IndependentGhostEnv(gym.Env):
         self.game_state.data._agentMoved = 0
         self.steps = 0
         
-        # Return only THIS ghost's observation
         ghost_obs = extract_ghost_observation(self.game_state, self.ghost_index)
-        
         return ghost_obs, {}
     
     def step(self, action):
-        """
-        Execute full turn:
-        1. Pac-Man moves (using policy)
-        2. All ghosts move (this ghost uses action, others use their policies)
-        """
+        """Execute full turn: Pac-Man moves, then all ghosts move."""
         action_map = {
             0: Directions.NORTH,
             1: Directions.SOUTH,
@@ -74,10 +59,9 @@ class IndependentGhostEnv(gym.Env):
         if isinstance(action, np.ndarray):
             action = int(action.item())
         
-        # Store this ghost's action
         my_action = action_map[action]
         
-        # Execute Pac-Man move
+        # Pac-Man's turn
         legal_pacman = self.game_state.getLegalActions(0)
         if self.pacman_policy is not None:
             # Sync pacman_env state and get 53-dim observation
@@ -102,7 +86,7 @@ class IndependentGhostEnv(gym.Env):
         
         self.game_state = self.game_state.generateSuccessor(0, pacman_direction)
         
-        # Execute all ghost moves
+        # Ghosts' turn
         for ghost_idx in range(1, self.game_state.getNumAgents()):
             if self.game_state.isWin() or self.game_state.isLose():
                 break
@@ -110,13 +94,13 @@ class IndependentGhostEnv(gym.Env):
             legal_ghost = self.game_state.getLegalActions(ghost_idx)
             
             if ghost_idx == self.ghost_index:
-                # ✅ This is OUR ghost - use the action we're training
+                # This ghost uses the action being trained
                 ghost_direction = my_action
                 if ghost_direction not in legal_ghost:
                     ghost_direction = np.random.choice(legal_ghost)
             
             elif ghost_idx in self.other_ghost_policies:
-                # ✅ Other ghost has a trained policy
+                # Other trained ghost
                 other_obs = extract_ghost_observation(self.game_state, ghost_idx)
                 other_action, _ = self.other_ghost_policies[ghost_idx].predict(
                     other_obs, deterministic=False
@@ -153,42 +137,60 @@ class IndependentGhostEnv(gym.Env):
         return ghost_obs, reward, terminated, truncated, info
     
     def _calculate_individual_ghost_reward(self):
-        """
-        Reward for THIS ghost specifically.
-        
-        Encourages individual contribution while maintaining team goal.
-        """
+        """Calculate reward for this ghost based on proximity, coordination, and outcomes."""
         reward = 0.0
         
-        # Team rewards (all ghosts get these)
-        if self.game_state.isLose():
-            reward += 100.0  # Caught Pac-Man!
-        elif self.game_state.isWin():
-            reward -= 50.0   # Pac-Man won
+        # Terminal rewards
+        if self.game_state.isLose():  # Caught Pac-Man
+            return 150.0
+        elif self.game_state.isWin():  # Pac-Man won
+            return -50.0
         
-        # Individual reward: proximity to Pac-Man
+        # Distance-based rewards
         pacman_pos = self.game_state.getPacmanPosition()
         ghost_pos = self.game_state.getGhostPosition(self.ghost_index)
         ghost_state = self.game_state.getGhostState(self.ghost_index)
         
         dist = manhattanDistance(pacman_pos, ghost_pos)
         
-        # Reward for being close (if not scared)
         if ghost_state.scaredTimer == 0:
-            if dist < 1:  # Very close to Pac-Man
-                reward -= 2.0  # Large penalty to discourage getting too close
-            elif dist < 3:  # Close to Pac-Man
-                reward -= 0.5  # Medium penalty
-            else:
-                reward -= 0.05 * dist  # Moderate penalty for being too far from Pac-Man
+            # Chase mode: reward proximity to Pac-Man
+            if dist <= 1:
+                reward += 5.0
+            elif dist <= 2:
+                reward += 2.0
+            elif dist <= 4:
+                reward += 1.0 / dist
+            
+            # Reward for closing distance
+            if hasattr(self, 'prev_dist_to_pacman'):
+                dist_delta = self.prev_dist_to_pacman - dist
+                if dist_delta > 0:
+                    reward += dist_delta * 1.0
+                elif dist_delta < 0:
+                    reward -= 0.3
+            
+            # Coordination bonus when multiple ghosts are close
+            other_ghost_dists = []
+            for gidx in range(1, self.game_state.getNumAgents()):
+                if gidx != self.ghost_index:
+                    other_pos = self.game_state.getGhostPosition(gidx)
+                    other_dist = manhattanDistance(pacman_pos, other_pos)
+                    other_ghost_dists.append(other_dist)
+            
+            if other_ghost_dists:
+                min_other_dist = min(other_ghost_dists)
+                if dist <= 3 and min_other_dist <= 3:
+                    reward += 1.5  # Potential trap
+                    
         else:
-            # If scared, reward for staying away
-            reward += 0.1 * dist  # Increased reward for staying far away
-
-        # Reward for getting close to scared ghosts
-        if ghost_state.scaredTimer == 0 and dist < 3:
-            reward += 0.5  # Increased reward for getting close to scared ghosts
+            # Scared mode: stay away from Pac-Man
+            if dist <= 2:
+                reward -= 3.0
+            else:
+                reward += min(dist * 0.2, 2.0)
         
-        reward -= 0.02  # Slightly increased penalty for taking too long to move
+        self.prev_dist_to_pacman = dist
+        reward -= 0.01  # Step penalty
         
         return reward

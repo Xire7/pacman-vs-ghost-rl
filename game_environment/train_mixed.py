@@ -1,15 +1,13 @@
 """
-Mixed Adversarial Training for Pac-Man vs Ghosts
+Mixed Adversarial Training for Pac-Man vs Ghosts.
 
-Training approach: Alternate between training phases
-- Phase 1: Train on random ghosts (learn general skills)
-- Phase 2: Train on trained ghosts (learn counter-strategies)
-
-This prevents catastrophic forgetting while improving against smart opponents.
+Alternates training between random and trained ghosts to prevent
+catastrophic forgetting while improving against smart opponents.
 """
 
 import argparse
 import os
+import numpy as np
 from datetime import datetime
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
@@ -44,6 +42,8 @@ def evaluate(model, layout, ghost_models=None, n=50):
         done = False
         while not done:
             action, _ = model.predict(obs, deterministic=True, action_masks=env.action_masks())
+            if isinstance(action, np.ndarray):
+                action = int(action.item())
             obs, _, t, tr, info = env.step(action)
             done = t or tr
         if info.get('win'):
@@ -69,21 +69,25 @@ def train_ghost(ghost_idx, pacman_model, ghost_models, layout, dirs, timesteps, 
     )
     
     prev_path = os.path.join(dirs['models'], f"ghost_{ghost_idx}_v{version-1}.zip")
+    tb_log_dir = os.path.join(dirs['logs'], f"ghost_{ghost_idx}")
+    
     if os.path.exists(prev_path) and version > 1:
-        model = DQN.load(prev_path, env=env)
+        model = DQN.load(prev_path, env=env, tensorboard_log=tb_log_dir)
         model.learning_rate = 5e-4
     else:
         model = DQN(
             "MlpPolicy", env,
             learning_rate=1e-3,
-            buffer_size=50000,
-            learning_starts=1000,
-            batch_size=64,
+            buffer_size=100000,
+            learning_starts=2000,
+            batch_size=128,
             gamma=0.99,
             target_update_interval=1000,
             exploration_fraction=0.3,
             exploration_final_eps=0.05,
-            verbose=0
+            policy_kwargs={"net_arch": [256, 256]},
+            verbose=0,
+            tensorboard_log=tb_log_dir
         )
     
     model.learn(total_timesteps=timesteps, progress_bar=True)
@@ -107,28 +111,30 @@ def train_pacman(pacman_path, layout, dirs, ghost_models, timesteps, version, n_
             env = PacmanEnv(layout_name=layout, ghost_policies=ghost_models, max_steps=500)
             return ActionMasker(env, lambda e: e.action_masks())
         return _init
-    
-    half_steps = timesteps // 2
+
+    # Curriculum: 60% -> 40% random ghosts
+    random_ratio = max(0.4, 0.6 - 0.05 * (version - 1))
+    random_steps = int(timesteps * random_ratio)
+    trained_steps = timesteps - random_steps
+    log_dir = os.path.join(dirs['logs'], "pacman")
     
     # Phase 1: Train on random ghosts
-    print(f"    Phase 1: {half_steps:,} steps vs random ghosts...")
+    print(f"    Phase 1: {random_steps:,} steps vs random ghosts ({random_ratio*100:.0f}%)")
     env_rand = VecMonitor(DummyVecEnv([make_random_env() for _ in range(n_envs)]))
-    model = MaskablePPO.load(pacman_path, env=env_rand)
+    model = MaskablePPO.load(pacman_path, env=env_rand, tensorboard_log=log_dir)
     model.learning_rate = 1e-4
     model.clip_range = lambda _: 0.1
-    model.learn(total_timesteps=half_steps, progress_bar=True)
+    model.learn(total_timesteps=random_steps, progress_bar=True)
     env_rand.close()
     
     # Phase 2: Train on trained ghosts
-    print(f"    Phase 2: {half_steps:,} steps vs trained ghosts...")
+    print(f"    Phase 2: {trained_steps:,} steps vs trained ghosts ({(1-random_ratio)*100:.0f}%)")
     env_trained = VecMonitor(DummyVecEnv([make_trained_env() for _ in range(n_envs)]))
-    
-    # Transfer policy to new env
-    model2 = MaskablePPO.load(pacman_path, env=env_trained)
+    model2 = MaskablePPO.load(pacman_path, env=env_trained, tensorboard_log=log_dir)
     model2.policy.load_state_dict(model.policy.state_dict())
     model2.learning_rate = 1e-4
     model2.clip_range = lambda _: 0.1
-    model2.learn(total_timesteps=half_steps, progress_bar=True, reset_num_timesteps=False)
+    model2.learn(total_timesteps=trained_steps, progress_bar=True, reset_num_timesteps=False)
     env_trained.close()
     
     # Save
@@ -139,33 +145,46 @@ def train_pacman(pacman_path, layout, dirs, ghost_models, timesteps, version, n_
 
 def main():
     parser = argparse.ArgumentParser(description='Mixed Adversarial Training')
-    parser.add_argument('--rounds', type=int, default=6, help='Training rounds')
+    parser.add_argument('--rounds', type=int, default=10, help='Training rounds')
     parser.add_argument('--layout', type=str, default='mediumClassic')
     parser.add_argument('--pacman', type=str, required=True, help='Pretrained Pac-Man path')
-    parser.add_argument('--ghost-steps', type=int, default=40000)
-    parser.add_argument('--pacman-steps', type=int, default=50000)
+    parser.add_argument('--ghost-steps', type=int, default=50000)
+    parser.add_argument('--pacman-steps', type=int, default=100000)
+    parser.add_argument('--resume', type=str, default=None, help='Resume from a previous run directory')
+    parser.add_argument('--start-round', type=int, default=1, help='Starting round (for resume)')
     args = parser.parse_args()
     
     print(f"\n{'='*60}")
     print(f"MIXED ADVERSARIAL TRAINING")
     print(f"  Layout: {args.layout}")
     print(f"  Rounds: {args.rounds}")
+    if args.resume:
+        print(f"  Resume from: {args.resume}")
+        print(f"  Starting round: {args.start_round}")
     print(f"{'='*60}")
     
-    run_dir, dirs = create_dirs()
-    print(f"Output: {run_dir}\n")
+    # Handle resume vs new run
+    if args.resume:
+        run_dir = args.resume
+        dirs = {
+            'models': os.path.join(run_dir, 'models'),
+            'logs': os.path.join(run_dir, 'logs')
+        }
+        print(f"Resuming in: {run_dir}\n")
+    else:
+        run_dir, dirs = create_dirs()
+        print(f"Output: {run_dir}\n")
     
     # Load pretrained Pac-Man
     print(f"Loading: {args.pacman}")
     pacman_model = MaskablePPO.load(args.pacman)
     pacman_path = args.pacman
     
-    # Baseline
-    baseline = evaluate(pacman_model, args.layout)
-    print(f"Baseline vs random: {baseline*100:.1f}%")
-    
-    # Save as v0
-    pacman_model.save(os.path.join(dirs['models'], "pacman_v0"))
+    # Baseline (only if not resuming)
+    if not args.resume:
+        baseline = evaluate(pacman_model, args.layout)
+        print(f"Baseline vs random: {baseline*100:.1f}%")
+        pacman_model.save(os.path.join(dirs['models'], "pacman_v0"))
     
     # Get ghost count
     temp_env = PacmanEnv(layout_name=args.layout)
@@ -175,8 +194,17 @@ def main():
     
     ghost_models = {i: None for i in range(1, num_ghosts + 1)}
     
+    # Load existing ghost models if resuming
+    if args.resume and args.start_round > 1:
+        prev_ghost_version = args.start_round  # ghosts are 1 version ahead
+        for ghost_idx in range(1, num_ghosts + 1):
+            ghost_path = os.path.join(dirs['models'], f"ghost_{ghost_idx}_v{prev_ghost_version}.zip")
+            if os.path.exists(ghost_path):
+                ghost_models[ghost_idx] = DQN.load(ghost_path)
+                print(f"  Loaded: ghost_{ghost_idx}_v{prev_ghost_version}")
+    
     # Training loop
-    for round_num in range(1, args.rounds + 1):
+    for round_num in range(args.start_round, args.rounds + 1):
         print(f"\n{'─'*60}")
         print(f"ROUND {round_num}/{args.rounds}")
         print(f"{'─'*60}")
@@ -184,7 +212,9 @@ def main():
         # Train ghosts
         ghost_version = round_num
         print(f"\nPhase: Train Ghosts (v{ghost_version})")
-        for ghost_idx in range(1, num_ghosts + 1):
+        ghost_order = list(range(1, num_ghosts + 1))
+        np.random.shuffle(ghost_order)
+        for ghost_idx in ghost_order:
             ghost_models[ghost_idx] = train_ghost(
                 ghost_idx, pacman_model, ghost_models,
                 args.layout, dirs, args.ghost_steps, ghost_version
@@ -216,6 +246,14 @@ def main():
     
     pacman_model.save(os.path.join(dirs['models'], "pacman_best"))
     print(f"\nSaved: {dirs['models']}/pacman_best.zip")
+    
+    print(f"\n{'='*60}")
+    print(f"VIEW TENSORBOARD")
+    print(f"{'='*60}")
+    print(f"Run this command:")
+    print(f"  tensorboard --logdir={dirs['logs']}")
+    print(f"\nThen open: http://localhost:6006")
+    print(f"{'='*60}\n")
 
 
 if __name__ == '__main__':

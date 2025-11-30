@@ -1,8 +1,6 @@
 """
 Gymnasium-compatible Pacman environment with action masking support.
 Uses MaskablePPO from sb3-contrib for valid action enforcement.
-
-OPTIMIZED VERSION: Improved reward shaping and observation space for faster convergence.
 """
 
 import gymnasium as gym
@@ -23,7 +21,7 @@ from textDisplay import NullGraphics
 from state_extractor import extract_ghost_observation
 
 
-# Observation space dimension (reduced from 53 for cleaner signal)
+# Observation space dimension
 OBS_DIM = 33
 
 
@@ -31,20 +29,7 @@ class PacmanEnv(gym.Env):
     """
     Gymnasium environment for Pacman with action masking.
     
-    Observation: 33-dimensional vector with carefully selected features:
-        [0-1]   Pacman position (x, y) normalized to [-1, 1]
-        [2-9]   Ghost relative positions (4 ghosts × 2 coords)
-        [10-13] Ghost scared timers (4 ghosts, normalized)
-        [14-17] Danger level per direction (N, S, E, W) - inverse distance to nearest dangerous ghost
-        [18-21] Food signal per direction (N, S, E, W) - inverse distance to nearest food
-        [22-25] Wall immediately adjacent (N, S, E, W) - binary
-        [26-27] Nearest food direction (dx, dy normalized)
-        [28]    Nearest food distance (normalized)
-        [29]    Food remaining ratio
-        [30]    Nearest capsule distance (normalized, 1.0 if none)
-        [31]    Any ghost scared? (binary)
-        [32]    Progress (steps / max_steps)
-    
+    Observation: 33-dimensional vector
     Actions: 0=North, 1=South, 2=East, 3=West, 4=Stop
     """
     

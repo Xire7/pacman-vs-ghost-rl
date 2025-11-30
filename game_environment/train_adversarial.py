@@ -1,19 +1,7 @@
 """
-Iterative Freeze Training Script for Pac-Man vs Ghosts
+Adversarial RL Training Script for Pac-Man vs Ghosts.
 
-This script implements adversarial RL with:
-- MaskablePPO for Pac-Man (strategic, policy-based with action masking)
-- Independent DQN for each Ghost (reactive, value-based)
-- Sequential within-round training with rotation
-- Iterative freezing between rounds
-
-Training Structure:
-- Odd rounds: Train ghosts sequentially (each sees latest teammate updates)
-- Even rounds: Train Pac-Man against all updated ghosts
-- Ghost training order rotates each round to reduce asymmetry
-
-Usage:
-    python train_adversarial.py --rounds 10 --layout mediumClassic
+Uses MaskablePPO for Pac-Man and DQN for Ghosts with iterative freezing.
 """
 
 import argparse
@@ -57,22 +45,7 @@ def train_ghost_sequential(
     initial_timesteps=50000,
     refinement_timesteps=30000
 ):
-    """
-    Train a single ghost with DQN.
-    
-    Args:
-        ghost_idx: Which ghost to train (1-4)
-        round_num: Current round number
-        pacman_model: Current Pac-Man policy (or None for random)
-        ghost_models: Dict of current ghost policies
-        layout_name: Map layout
-        dirs: Dictionary of output directories
-        initial_timesteps: Training steps for first round
-        refinement_timesteps: Training steps for subsequent rounds
-    
-    Returns:
-        Trained DQN model for this ghost
-    """
+    """Train a single ghost with DQN."""
     print(f"\n{'─'*60}")
     print(f"Training Ghost {ghost_idx}")
     print(f"{'─'*60}")
@@ -185,21 +158,7 @@ def train_pacman(
     refinement_timesteps=50000,
     reward_shaping=False
 ):
-    """
-    Train Pac-Man with MaskablePPO against current ghost policies.
-    
-    Args:
-        round_num: Current round number
-        pacman_model: Previous Pac-Man policy (or None)
-        ghost_models: Dict of current ghost policies
-        layout_name: Map layout
-        dirs: Dictionary of output directories
-        initial_timesteps: Training steps for first round
-        refinement_timesteps: Training steps for subsequent rounds
-    
-    Returns:
-        Trained MaskablePPO model for Pac-Man
-    """
+    """Train Pac-Man with MaskablePPO against current ghost policies."""
     print(f"\n{'═'*60}")
     print(f"Training Pac-Man (MaskablePPO)")
     print(f"{'═'*60}")
@@ -230,12 +189,12 @@ def train_pacman(
         print(f"Loading Pac-Man v{prev_version} for continued training...")
         try:
             model = MaskablePPO.load(prev_model_path, env=env)
-            # Use conservative updates to avoid forgetting how to beat random ghosts
-            model.learning_rate = 1e-4  # Lower LR for fine-tuning
-            model.clip_range = lambda _: 0.1  # Smaller clip range = more conservative (must be callable)
-            model.ent_coef = 0.02  # Less exploration when refining
+            # Conservative updates to avoid forgetting
+            model.learning_rate = 1e-4
+            model.clip_range = lambda _: 0.1
+            model.ent_coef = 0.02
             timesteps = refinement_timesteps
-            print(f"Refining for {timesteps:,} timesteps (conservative: lr=1e-4, clip=0.1)")
+            print(f"Refining for {timesteps:,} timesteps (lr=1e-4, clip=0.1)")
         except Exception as e:
             print(f"Failed to load model: {e}, creating new model instead")
             model = MaskablePPO(
@@ -297,12 +256,7 @@ def train_pacman(
 
 
 def evaluate_matchup(pacman_model, ghost_models, layout_name, n_episodes=20):
-    """
-    Evaluate current Pac-Man vs Ghosts matchup.
-    
-    Returns:
-        dict: Statistics including win rates, scores, etc.
-    """
+    """Evaluate current Pac-Man vs Ghosts matchup."""
     print(f"\n{'─'*60}")
     print(f"Evaluating Current Matchup ({n_episodes} episodes)")
     print(f"{'─'*60}")
@@ -370,10 +324,7 @@ def evaluate_matchup(pacman_model, ghost_models, layout_name, n_episodes=20):
     return stats
 
 def evaluate_vs_random_ghosts(pacman_model, layout_name, n_episodes=50):
-    """
-    Evaluate Pac-Man against random ghosts to check for regression.
-    This is a sanity check to ensure adversarial training doesn't hurt general performance.
-    """
+    """Evaluate Pac-Man against random ghosts (sanity check)."""
     print(f"\n{'─'*60}")
     print(f"Sanity Check: Pac-Man vs Random Ghosts ({n_episodes} episodes)")
     print(f"{'─'*60}")
@@ -426,24 +377,7 @@ def train_adversarial_rl(
     eval_episodes=20,
     pretrained_pacman_path=None
 ):
-    """
-    Main adversarial RL training loop with sequential ghost updates and rotation.
-    
-    Args:
-        num_rounds: Total training rounds (odd=ghosts, even=pacman)
-        layout_name: Pac-Man map layout
-        num_ghosts: Number of ghosts to train (1-4)
-        ghost_initial_timesteps: Training steps for ghost initial training
-        ghost_refinement_timesteps: Training steps for ghost refinement
-        pacman_initial_timesteps: Training steps for Pac-Man initial training
-        pacman_refinement_timesteps: Training steps for Pac-Man refinement
-        eval_frequency: Evaluate every N rounds
-        eval_episodes: Number of episodes for evaluation
-        pretrained_pacman_path: Path to pretrained Pac-Man model (optional)
-    
-    Returns:
-        tuple: (final_pacman_model, final_ghost_models, training_history)
-    """
+    """Main adversarial RL training loop with iterative freezing."""
     print(f"\n{'#'*60}")
     print(f"# ADVERSARIAL RL TRAINING")
     print(f"#")
