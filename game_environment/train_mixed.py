@@ -1,15 +1,19 @@
 """
 Mixed Adversarial Training for Pac-Man vs Ghosts
 
+
 Training approach: Alternate between training phases
 - Phase 1: Train on random ghosts (learn general skills)
 - Phase 2: Train on trained ghosts (learn counter-strategies)
 
+
 This prevents catastrophic forgetting while improving against smart opponents.
 """
 
+
 import argparse
 import os
+import numpy as np
 from datetime import datetime
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
@@ -17,6 +21,7 @@ from stable_baselines3 import DQN
 from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
 from ghost_agent import IndependentGhostEnv
 from gym_env import PacmanEnv
+
 
 
 def create_dirs(base_dir="training_output"):
@@ -44,6 +49,8 @@ def evaluate(model, layout, ghost_models=None, n=50):
         done = False
         while not done:
             action, _ = model.predict(obs, deterministic=True, action_masks=env.action_masks())
+            if isinstance(action, np.ndarray):
+                action = int(action.item())
             obs, _, t, tr, info = env.step(action)
             done = t or tr
         if info.get('win'):
@@ -69,10 +76,16 @@ def train_ghost(ghost_idx, pacman_model, ghost_models, layout, dirs, timesteps, 
     )
     
     prev_path = os.path.join(dirs['models'], f"ghost_{ghost_idx}_v{version-1}.zip")
+    
+    # ✏️ ADD: TensorBoard log directory for this ghost
+    tb_log_dir = os.path.join(dirs['logs'], f"ghost_{ghost_idx}")
+    
     if os.path.exists(prev_path) and version > 1:
-        model = DQN.load(prev_path, env=env)
+        # ✏️ CHANGED: Added tensorboard_log parameter
+        model = DQN.load(prev_path, env=env, tensorboard_log=tb_log_dir)
         model.learning_rate = 5e-4
     else:
+        # ✏️ CHANGED: Added tensorboard_log parameter
         model = DQN(
             "MlpPolicy", env,
             learning_rate=1e-3,
@@ -83,7 +96,8 @@ def train_ghost(ghost_idx, pacman_model, ghost_models, layout, dirs, timesteps, 
             target_update_interval=1000,
             exploration_fraction=0.3,
             exploration_final_eps=0.05,
-            verbose=0
+            verbose=0,
+            tensorboard_log=tb_log_dir
         )
     
     model.learn(total_timesteps=timesteps, progress_bar=True)
@@ -107,28 +121,36 @@ def train_pacman(pacman_path, layout, dirs, ghost_models, timesteps, version, n_
             env = PacmanEnv(layout_name=layout, ghost_policies=ghost_models, max_steps=500)
             return ActionMasker(env, lambda e: e.action_masks())
         return _init
+
+    # Gradual shift: more random early, more trained later
+    random_ratio = max(0.3, 0.8 - 0.1 * (version - 1))
+    random_steps = int(timesteps * random_ratio)
+    trained_steps = timesteps - random_steps
     
-    half_steps = timesteps // 2
+    # ✏️ ADD THIS: TensorBoard log directory
+    log_dir = os.path.join(dirs['logs'], f"pacman")
     
     # Phase 1: Train on random ghosts
-    print(f"    Phase 1: {half_steps:,} steps vs random ghosts...")
+    print(f"    Phase 1: {random_steps:,} steps vs random ghosts ({random_ratio*100:.0f}%)")
     env_rand = VecMonitor(DummyVecEnv([make_random_env() for _ in range(n_envs)]))
-    model = MaskablePPO.load(pacman_path, env=env_rand)
+    # ✏️ CHANGED: Added tensorboard_log parameter
+    model = MaskablePPO.load(pacman_path, env=env_rand, tensorboard_log=log_dir)
     model.learning_rate = 1e-4
     model.clip_range = lambda _: 0.1
-    model.learn(total_timesteps=half_steps, progress_bar=True)
+    model.learn(total_timesteps=random_steps, progress_bar=True)
     env_rand.close()
     
     # Phase 2: Train on trained ghosts
-    print(f"    Phase 2: {half_steps:,} steps vs trained ghosts...")
+    print(f"    Phase 2: {trained_steps:,} steps vs trained ghosts ({(1-random_ratio)*100:.0f}%)")
     env_trained = VecMonitor(DummyVecEnv([make_trained_env() for _ in range(n_envs)]))
     
     # Transfer policy to new env
-    model2 = MaskablePPO.load(pacman_path, env=env_trained)
+    # ✏️ CHANGED: Added tensorboard_log parameter
+    model2 = MaskablePPO.load(pacman_path, env=env_trained, tensorboard_log=log_dir)
     model2.policy.load_state_dict(model.policy.state_dict())
     model2.learning_rate = 1e-4
     model2.clip_range = lambda _: 0.1
-    model2.learn(total_timesteps=half_steps, progress_bar=True, reset_num_timesteps=False)
+    model2.learn(total_timesteps=trained_steps, progress_bar=True, reset_num_timesteps=False)
     env_trained.close()
     
     # Save
@@ -216,6 +238,15 @@ def main():
     
     pacman_model.save(os.path.join(dirs['models'], "pacman_best"))
     print(f"\nSaved: {dirs['models']}/pacman_best.zip")
+    
+    # ✏️ ADD THIS: Print TensorBoard command
+    print(f"\n{'='*60}")
+    print(f"VIEW TENSORBOARD")
+    print(f"{'='*60}")
+    print(f"Run this command:")
+    print(f"  tensorboard --logdir={dirs['logs']}")
+    print(f"\nThen open: http://localhost:6006")
+    print(f"{'='*60}\n")
 
 
 if __name__ == '__main__':

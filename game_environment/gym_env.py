@@ -156,6 +156,13 @@ class PacmanEnv(gym.Env):
         
         game = rules.newGame(self.layout, self.max_steps, pacman, ghosts, NullGraphics(), quiet=True)
         self.game_state = game.state
+
+        for _ in range(5):  # Execute 5 dummy steps to unstuck ghosts
+            for ghost_idx in range(1, self.game_state.getNumAgents()):
+                legal_actions = self.game_state.getLegalActions(ghost_idx)
+                if legal_actions:
+                    action = np.random.choice(legal_actions)
+                    self.game_state = self.game_state.generateSuccessor(ghost_idx, action)
         
         # Reset tracking
         self.step_count = 0
@@ -189,7 +196,7 @@ class PacmanEnv(gym.Env):
         
         if self.render_mode == "human" and self.display:
             self.display.update(self.game_state.data)
-        
+
         # Execute ghost actions
         for ghost_idx in range(1, self.num_ghosts + 1):
             if self.game_state.isWin() or self.game_state.isLose():
@@ -212,7 +219,9 @@ class PacmanEnv(gym.Env):
         
         info = {
             "score": self.game_state.getScore(),
+            "raw_score": self.game_state.getScore(),
             "win": self.game_state.isWin(),
+            "lose": self.game_state.isLose(),  
             "steps": self.step_count
         }
         
@@ -266,7 +275,7 @@ class PacmanEnv(gym.Env):
         
         if self.game_state.isLose():
             # Strong penalty for losing
-            reward -= 50.0
+            reward -= 100.0
             return reward
         
         # ============== FOOD REWARDS (smaller scale) ==============
@@ -284,7 +293,7 @@ class PacmanEnv(gym.Env):
         curr_food_dist = self._get_min_food_distance()
         if self.prev_distance_to_food < float('inf') and curr_food_dist < float('inf'):
             dist_improvement = self.prev_distance_to_food - curr_food_dist
-            reward += dist_improvement * 0.2
+            reward += dist_improvement * 0.1
         
         # ============== GHOST INTERACTION REWARDS ==============
         pacman_pos = self.game_state.getPacmanPosition()
@@ -307,13 +316,13 @@ class PacmanEnv(gym.Env):
         if min_danger_dist < float('inf'):
             if min_danger_dist <= 1:
                 # VERY CLOSE - strong penalty (this leads to death)
-                reward -= 3.0
+                reward -= 5.0
             elif min_danger_dist <= 2:
                 # Close - moderate danger
-                reward -= 1.0
+                reward -= 1.5
             elif min_danger_dist <= 3:
                 # Approaching danger
-                reward -= 0.3
+                reward -= 0.5
         
         # Reward for escaping danger
         curr_min_ghost_dist = self._get_min_dangerous_ghost_distance()
@@ -331,7 +340,7 @@ class PacmanEnv(gym.Env):
                 reward += 1.0  # Strategic capsule usage
         
         # ============== TIME PRESSURE ==============
-        reward -= 0.02  # Slightly higher step penalty to encourage speed
+        reward -= 0.01  # Slightly higher step penalty to encourage speed
         
         return reward
     

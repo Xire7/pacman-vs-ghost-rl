@@ -43,6 +43,7 @@ class IndependentGhostEnv(gym.Env):
         self.game_state = None
         self.steps = 0
         self.prev_ghost_distances = {}
+        self.prev_dist_to_pacman = float('inf')
     
     def reset(self, *, seed=None, options=None):
         """Reset and return this ghost's observation."""
@@ -163,8 +164,10 @@ class IndependentGhostEnv(gym.Env):
         # Team rewards (all ghosts get these)
         if self.game_state.isLose():
             reward += 100.0  # Caught Pac-Man!
+            return reward
         elif self.game_state.isWin():
-            reward -= 50.0   # Pac-Man won
+            reward -= 30.0   # Pac-Man won
+            return reward
         
         # Individual reward: proximity to Pac-Man
         pacman_pos = self.game_state.getPacmanPosition()
@@ -175,20 +178,22 @@ class IndependentGhostEnv(gym.Env):
         
         # Reward for being close (if not scared)
         if ghost_state.scaredTimer == 0:
-            if dist < 1:  # Very close to Pac-Man
-                reward -= 2.0  # Large penalty to discourage getting too close
-            elif dist < 3:  # Close to Pac-Man
-                reward -= 0.5  # Medium penalty
-            else:
-                reward -= 0.05 * dist  # Moderate penalty for being too far from Pac-Man
+            reward += 2.0 / (dist + 1)
+
+            if dist <= 1:  # Very close to Pac-Man
+                reward += 2.0  # Large penalty to discourage getting too close
+            elif dist <= 2:  # Close to Pac-Man
+                reward += 1.0  # Medium penalty
         else:
             # If scared, reward for staying away
-            reward += 0.1 * dist  # Increased reward for staying far away
+            reward += dist * 0.3  # Increased reward for staying far away
 
-        # Reward for getting close to scared ghosts
-        if ghost_state.scaredTimer == 0 and dist < 3:
-            reward += 0.5  # Increased reward for getting close to scared ghosts
+        if hasattr(self, 'prev_dist_to_pacman'):
+            dist_improvement = self.prev_dist_to_pacman - dist
+            if dist_improvement > 0:
+                reward += dist_improvement * 0.5  # Reward closing distance
+        self.prev_dist_to_pacman = dist
         
-        reward -= 0.02  # Slightly increased penalty for taking too long to move
+        reward -= 0.01
         
         return reward
