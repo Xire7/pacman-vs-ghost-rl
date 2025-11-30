@@ -123,7 +123,7 @@ def train_pacman(pacman_path, layout, dirs, ghost_models, timesteps, version, n_
         return _init
 
     # Gradual shift: more random early, more trained later
-    random_ratio = max(0.3, 0.8 - 0.1 * (version - 1))
+    random_ratio = max(0.5, 0.9 - 0.05 * (version - 1))
     random_steps = int(timesteps * random_ratio)
     trained_steps = timesteps - random_steps
     
@@ -161,7 +161,7 @@ def train_pacman(pacman_path, layout, dirs, ghost_models, timesteps, version, n_
 
 def main():
     parser = argparse.ArgumentParser(description='Mixed Adversarial Training')
-    parser.add_argument('--rounds', type=int, default=6, help='Training rounds')
+    parser.add_argument('--rounds', type=int, default=10, help='Training rounds')
     parser.add_argument('--layout', type=str, default='mediumClassic')
     parser.add_argument('--pacman', type=str, required=True, help='Pretrained Pac-Man path')
     parser.add_argument('--ghost-steps', type=int, default=40000)
@@ -206,7 +206,9 @@ def main():
         # Train ghosts
         ghost_version = round_num
         print(f"\nPhase: Train Ghosts (v{ghost_version})")
-        for ghost_idx in range(1, num_ghosts + 1):
+        ghost_order = list(range(1, num_ghosts + 1))
+        np.random.shuffle(ghost_order)
+        for ghost_idx in ghost_order:
             ghost_models[ghost_idx] = train_ghost(
                 ghost_idx, pacman_model, ghost_models,
                 args.layout, dirs, args.ghost_steps, ghost_version

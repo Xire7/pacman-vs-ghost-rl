@@ -303,7 +303,7 @@ class PacmanEnv(gym.Env):
         ghosts_eaten_now = self._count_ghosts_eaten()
         new_ghosts_eaten = ghosts_eaten_now - self.prev_num_ghosts_eaten
         if new_ghosts_eaten > 0:
-            reward += new_ghosts_eaten * 5.0  # Nice bonus but less than win
+            reward += new_ghosts_eaten * 8.0  # Nice bonus but less than win
         
         # Danger avoidance - CRITICAL for survival
         min_danger_dist = float('inf')
