@@ -4,7 +4,7 @@ import os
 import time
 import numpy as np
 from datetime import datetime
-from typing import Callable
+from typing import Callable, Dict, Optional, List
 
 from sb3_contrib import MaskablePPO
 from stable_baselines3 import DQN
@@ -18,18 +18,49 @@ from gym_env import PacmanEnv, make_masked_pacman_env
 # Directory Management
 # =============================================================================
 
-def create_training_dirs(base_dir, prefix):
+def create_training_dirs(base_dir: str, prefix: str, layout: str = None):
     """Create timestamped output directories for a training run.
     
     Args:
-        base_dir: Base directory (e.g., 'training_output', 'logs')
+        base_dir: Base directory (e.g., 'training_output', 'logs', 'models')
         prefix: Prefix for run folder (e.g., 'ppo', 'mixed')
+        layout: Optional layout name to include in folder name
+    
+    Returns:
+        Tuple of (run_dir, dirs_dict with 'models' and 'logs' keys)
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if layout:
+        run_name = f"{prefix}_{layout}_{timestamp}"
+    else:
+        run_name = f"{prefix}_{timestamp}"
+    run_dir = os.path.join(base_dir, run_name)
+    
+    dirs = {
+        'root': run_dir,
+        'models': os.path.join(run_dir, 'models') if 'mixed' in prefix else run_dir,
+        'logs': os.path.join(run_dir, 'logs') if 'mixed' in prefix else run_dir,
+    }
+    
+    # For PPO, model_dir and log_dir are separate top-level dirs
+    if 'ppo' in prefix:
+        dirs['models'] = run_dir
+        dirs['logs'] = run_dir
+    
+    for key in ['models', 'logs']:
+        os.makedirs(dirs[key], exist_ok=True)
+    
+    return run_dir, dirs
+
+
+def create_mixed_dirs(base_dir: str = "training_output"):
+    """Create output directories for mixed adversarial training.
     
     Returns:
         Tuple of (run_dir, dirs_dict)
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(base_dir, f"{prefix}_{timestamp}")
+    run_dir = os.path.join(base_dir, f"mixed_{timestamp}")
     dirs = {
         'models': os.path.join(run_dir, 'models'),
         'logs': os.path.join(run_dir, 'logs'),
@@ -43,30 +74,33 @@ def create_training_dirs(base_dir, prefix):
 # Model Loading
 # =============================================================================
 
-def load_ghost_models(ghost1_path, ghost2_path):
+def load_ghost_models(paths: Dict[int, str]) -> Optional[Dict[int, DQN]]:
     """Load ghost models from paths.
     
     Args:
-        ghost1_path: Path to ghost 1 model (or None)
-        ghost2_path: Path to ghost 2 model (or None)
+        paths: Dict mapping ghost index to model path, e.g., {1: 'path1.zip', 2: 'path2.zip'}
     
     Returns:
-        Dict {1: model, 2: model} or None if paths not provided
+        Dict {idx: model} or None if no valid paths
     """
-    if ghost1_path and ghost2_path:
-        return {
-            1: DQN.load(ghost1_path),
-            2: DQN.load(ghost2_path)
-        }
-    return None
+    if not paths:
+        return None
+    
+    models = {}
+    for idx, path in paths.items():
+        if path and os.path.exists(path):
+            models[idx] = DQN.load(path)
+    
+    return models if models else None
 
 
 # =============================================================================
 # Environment Creation
 # =============================================================================
 
-def create_vec_env(layout_name, ghost_type, num_envs, max_steps=500, 
-                   normalize=False, norm_stats_path=None, training=True):
+def create_vec_env(layout_name: str, ghost_type: str, num_envs: int, 
+                   max_steps: int = 500, normalize: bool = False, 
+                   norm_stats_path: str = None, training: bool = True):
     """Create vectorized training environment.
     
     Args:
@@ -93,7 +127,8 @@ def create_vec_env(layout_name, ghost_type, num_envs, max_steps=500,
             env.training = training
             env.norm_reward = training
         else:
-            env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0)
+            env = VecNormalize(env, norm_obs=True, norm_reward=True, 
+                              clip_obs=10.0, clip_reward=10.0)
     
     return env
 
@@ -124,7 +159,7 @@ def linear_schedule(initial_value: float, final_value: float = 1e-5) -> Callable
 class MetricsCallback(BaseCallback):
     """Logs win/loss metrics during training."""
     
-    def __init__(self, log_freq=100):
+    def __init__(self, log_freq: int = 100):
         super().__init__()
         self.wins = 0
         self.losses = 0
@@ -158,7 +193,7 @@ class MetricsCallback(BaseCallback):
 class NormalizeSyncCallback(BaseCallback):
     """Syncs VecNormalize stats between training and eval envs periodically."""
     
-    def __init__(self, eval_env, sync_freq=10000):
+    def __init__(self, eval_env, sync_freq: int = 10000):
         super().__init__()
         self.eval_env = eval_env
         self.sync_freq = sync_freq
@@ -175,24 +210,26 @@ class NormalizeSyncCallback(BaseCallback):
 # Evaluation
 # =============================================================================
 
-def evaluate_pacman(model, layout, ghost_models=None, ghost_type='random', 
-                    n_episodes=50, render=False, verbose=False):
+def evaluate_pacman(model, layout: str, ghost_models: Dict = None, 
+                    ghost_type: str = 'random', n_episodes: int = 50, 
+                    render: bool = False, verbose: bool = False) -> Dict:
     """Evaluate Pac-Man model and return statistics.
     
     Args:
         model: Trained MaskablePPO model
         layout: Layout name
-        ghost_models: Dict of ghost DQN models {0: model, 1: model} or None for random
+        ghost_models: Dict of ghost DQN models {1: model, 2: model} or None for random
         ghost_type: Ghost type if ghost_models is None ('random' or 'directional')
         n_episodes: Number of evaluation episodes
         render: Whether to render games visually
         verbose: Print per-episode results
     
     Returns:
-        Dict with 'win_rate', 'wins', 'losses', 'mean_score', 'std_score', 'scores'
+        Dict with 'win_rate', 'wins', 'losses', 'mean_score', 'std_score', 'mean_reward'
     """
     wins = 0
     scores = []
+    rewards = []
     render_mode = 'human' if render else None
     
     for ep in range(n_episodes):
@@ -205,15 +242,15 @@ def evaluate_pacman(model, layout, ghost_models=None, ghost_type='random',
         
         obs, _ = env.reset()
         done = False
-        steps = 0
+        ep_reward = 0
         
         while not done:
             action, _ = model.predict(obs, deterministic=True, action_masks=env.action_masks())
             if isinstance(action, np.ndarray):
                 action = int(action.item())
-            obs, _, terminated, truncated, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
+            ep_reward += reward
             done = terminated or truncated
-            steps += 1
             
             if render:
                 time.sleep(0.05)
@@ -224,10 +261,11 @@ def evaluate_pacman(model, layout, ghost_models=None, ghost_type='random',
         if win:
             wins += 1
         scores.append(score)
+        rewards.append(ep_reward)
         
         if verbose:
-            result = 'WIN!' if win else 'LOSE'
-            print(f"Ep {ep+1}: {result} | Score: {score} | Steps: {steps}")
+            result = 'WIN' if win else 'LOSE'
+            print(f"Ep {ep+1}: {result} | Reward: {ep_reward:.1f}")
         
         env.close()
         
@@ -240,47 +278,47 @@ def evaluate_pacman(model, layout, ghost_models=None, ghost_type='random',
         'losses': n_episodes - wins,
         'mean_score': np.mean(scores),
         'std_score': np.std(scores),
-        'scores': scores
+        'mean_reward': np.mean(rewards),
+        'std_reward': np.std(rewards),
     }
 
 
-def print_eval_summary(results, n_episodes):
-    """Print evaluation summary."""
-    print(f"\nWin Rate: {results['wins']}/{n_episodes} ({results['win_rate']*100:.1f}%)")
-    print(f"Mean Score: {results['mean_score']:.1f} ± {results['std_score']:.1f}")
-
-
-def run_evaluation(args):
-    """Common evaluation function for both training scripts.
+def quick_evaluate(model, layout: str, ghost_models: Dict = None, n: int = 50) -> float:
+    """Quick evaluation returning just win rate (for mixed training).
     
     Args:
-        args: Parsed arguments with model_path, layout, episodes, render, ghost1, ghost2
+        model: Trained MaskablePPO model
+        layout: Layout name
+        ghost_models: Dict of ghost DQN models or None for random
+        n: Number of episodes
+    
+    Returns:
+        Win rate as float (0.0 to 1.0)
     """
-    print(f"\nEvaluating on {args.layout}")
-    print(f"  Model: {args.model_path}")
-    print(f"  Episodes: {args.episodes}")
-    print(f"  Render: {args.render}")
+    wins = 0
+    for _ in range(n):
+        if ghost_models:
+            env = PacmanEnv(layout_name=layout, ghost_policies=ghost_models, max_steps=500)
+        else:
+            env = PacmanEnv(layout_name=layout, ghost_type='random', max_steps=500)
+        
+        obs, _ = env.reset()
+        done = False
+        while not done:
+            action, _ = model.predict(obs, deterministic=True, action_masks=env.action_masks())
+            if isinstance(action, np.ndarray):
+                action = int(action.item())
+            obs, _, t, tr, info = env.step(action)
+            done = t or tr
+        
+        if info.get('win'):
+            wins += 1
+        env.close()
     
-    model = MaskablePPO.load(args.model_path)
-    ghost_models = load_ghost_models(
-        getattr(args, 'ghost1', None), 
-        getattr(args, 'ghost2', None)
-    )
-    
-    if ghost_models:
-        print(f"  Ghost 1: {args.ghost1}")
-        print(f"  Ghost 2: {args.ghost2}")
-    else:
-        ghost_type = getattr(args, 'ghost_type', 'random')
-        print(f"  Ghosts: {ghost_type}")
-    print()
-    
-    results = evaluate_pacman(
-        model, args.layout,
-        ghost_models=ghost_models,
-        ghost_type=getattr(args, 'ghost_type', 'random'),
-        n_episodes=args.episodes,
-        render=args.render,
-        verbose=True
-    )
-    print_eval_summary(results, args.episodes)
+    return wins / n
+
+
+def print_eval_summary(results: Dict, n_episodes: int):
+    """Print evaluation summary."""
+    print(f"\nWin Rate: {results['wins']}/{n_episodes} ({results['win_rate']*100:.1f}%)")
+    print(f"Mean Reward: {results['mean_reward']:.1f} ± {results['std_reward']:.1f}")
