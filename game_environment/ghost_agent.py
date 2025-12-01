@@ -16,17 +16,23 @@ class IndependentGhostEnv(gym.Env):
     
     def __init__(self, ghost_index, layout_name='mediumClassic', 
                  pacman_policy=None, other_ghost_policies=None, 
-                 render_mode=None, max_steps=500):
+                 render_mode=None, max_steps=500, vecnorm_path=None):
         """
         Args:
             ghost_index: Which ghost this environment controls (1, 2, 3, or 4)
+            pacman_policy: Trained Pac-Man policy (MaskablePPO model)
             other_ghost_policies: Dict of {ghost_idx: trained_model} for other ghosts
+            vecnorm_path: Path to vecnormalize.pkl for Pac-Man policy (if trained with --normalize)
         """
         super().__init__()
         
         self.ghost_index = ghost_index
         self.pacman_policy = pacman_policy
         self.other_ghost_policies = other_ghost_policies or {}
+        self.vecnorm_path = vecnorm_path
+        
+        # Lazy-loaded VecNormalize wrapper for Pac-Man observations
+        self._vecnorm_wrapper = None
         
         self.pacman_env = PacmanEnv(
             layout_name=layout_name,
@@ -44,6 +50,68 @@ class IndependentGhostEnv(gym.Env):
         self.steps = 0
         self.prev_ghost_distances = {}
         self.prev_dist_to_pacman = float('inf')
+    
+    def _get_vecnorm_wrapper(self):
+        """
+        Lazy-load VecNormalize wrapper for normalizing Pac-Man observations.
+        Only created once and reused for efficiency.
+        """
+        if self._vecnorm_wrapper is None and self.vecnorm_path:
+            try:
+                from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
+                from sb3_contrib.common.wrappers import ActionMasker
+                
+                # Create a dummy environment for VecNormalize
+                def make_dummy_env():
+                    env = PacmanEnv(
+                        layout_name=self.pacman_env.layout_name,
+                        max_steps=self.pacman_env.max_steps,
+                        render_mode=None
+                    )
+                    return ActionMasker(env, lambda e: e.action_masks())
+                
+                dummy_vec_env = DummyVecEnv([make_dummy_env])
+                
+                # Load VecNormalize statistics
+                self._vecnorm_wrapper = VecNormalize.load(self.vecnorm_path, dummy_vec_env)
+                self._vecnorm_wrapper.training = False  # Don't update stats during ghost training
+                self._vecnorm_wrapper.norm_reward = False  # Don't normalize rewards
+                
+                print(f"  Ghost {self.ghost_index}: Loaded VecNormalize for Pac-Man policy")
+            except Exception as e:
+                print(f"  Warning: Failed to load VecNormalize: {e}")
+                self._vecnorm_wrapper = None
+        
+        return self._vecnorm_wrapper
+    
+    def _normalize_pacman_obs(self, obs):
+        """
+        Normalize Pac-Man observation using VecNormalize if available.
+        
+        Args:
+            obs: Raw observation from Pac-Man environment (shape: (33,))
+        
+        Returns:
+            Normalized observation (same shape)
+        """
+        if self.vecnorm_path is None:
+            # No normalization needed
+            return obs
+        
+        vecnorm = self._get_vecnorm_wrapper()
+        
+        if vecnorm is None:
+            # Failed to load VecNormalize, return raw obs
+            return obs
+        
+        try:
+            # VecNormalize expects batched input: (n_envs, obs_dim)
+            obs_batch = obs.reshape(1, -1)
+            normalized_batch = vecnorm.normalize_obs(obs_batch)
+            return normalized_batch[0]  # Return unbatched
+        except Exception as e:
+            print(f"  ⚠ Warning: VecNormalize normalization failed: {e}")
+            return obs
     
     def reset(self, *, seed=None, options=None):
         """Reset and return this ghost's observation."""
@@ -78,17 +146,21 @@ class IndependentGhostEnv(gym.Env):
         # Store this ghost's action
         my_action = action_map[action]
         
-        # Execute Pac-Man move
+        # ========== EXECUTE PAC-MAN MOVE ==========
         legal_pacman = self.game_state.getLegalActions(0)
+        
         if self.pacman_policy is not None:
-            # Sync pacman_env state and get 53-dim observation
+            # Sync pacman_env state and get observation
             self.pacman_env.game_state = self.game_state
             pacman_obs = self.pacman_env._get_observation()
+            
+            # NORMALIZE OBSERVATION if VecNormalize is available
+            pacman_obs = self._normalize_pacman_obs(pacman_obs)
             
             # Get action masks
             action_masks = self.pacman_env.action_masks()
             
-            # Get action with masking
+            # Get action with masking (observation is now normalized)
             pacman_action, _ = self.pacman_policy.predict(
                 pacman_obs, deterministic=False, action_masks=action_masks
             )
@@ -99,11 +171,12 @@ class IndependentGhostEnv(gym.Env):
             if pacman_direction not in legal_pacman:
                 pacman_direction = np.random.choice(legal_pacman)
         else:
+            # Random Pac-Man
             pacman_direction = np.random.choice(legal_pacman)
         
         self.game_state = self.game_state.generateSuccessor(0, pacman_direction)
         
-        # Execute all ghost moves
+        # ========== EXECUTE ALL GHOST MOVES ==========
         for ghost_idx in range(1, self.game_state.getNumAgents()):
             if self.game_state.isWin() or self.game_state.isLose():
                 break
@@ -111,13 +184,13 @@ class IndependentGhostEnv(gym.Env):
             legal_ghost = self.game_state.getLegalActions(ghost_idx)
             
             if ghost_idx == self.ghost_index:
-                # ✅ This is OUR ghost - use the action we're training
+                # This is OUR ghost - use the action we're training
                 ghost_direction = my_action
                 if ghost_direction not in legal_ghost:
                     ghost_direction = np.random.choice(legal_ghost)
             
             elif ghost_idx in self.other_ghost_policies:
-                # ✅ Other ghost has a trained policy
+                # Other ghost has a trained policy
                 other_obs = extract_ghost_observation(self.game_state, ghost_idx)
                 other_action, _ = self.other_ghost_policies[ghost_idx].predict(
                     other_obs, deterministic=False
@@ -129,10 +202,12 @@ class IndependentGhostEnv(gym.Env):
                     ghost_direction = np.random.choice(legal_ghost)
             
             else:
+                # Random ghost
                 ghost_direction = np.random.choice(legal_ghost)
             
             self.game_state = self.game_state.generateSuccessor(ghost_idx, ghost_direction)
         
+        # ========== CALCULATE REWARD ==========
         reward = self._calculate_individual_ghost_reward()
         
         terminated = self.game_state.isWin() or self.game_state.isLose()
@@ -140,6 +215,7 @@ class IndependentGhostEnv(gym.Env):
         
         self.steps += 1
         
+        # ========== GET NEXT OBSERVATION ==========
         if not terminated and not truncated:
             ghost_obs = extract_ghost_observation(self.game_state, self.ghost_index)
         else:
@@ -181,19 +257,34 @@ class IndependentGhostEnv(gym.Env):
             reward += 2.0 / (dist + 1)
 
             if dist <= 1:  # Very close to Pac-Man
-                reward += 2.0  # Large penalty to discourage getting too close
+                reward += 2.0  # Large bonus for applying pressure
             elif dist <= 2:  # Close to Pac-Man
-                reward += 1.0  # Medium penalty
+                reward += 1.0  # Medium bonus
         else:
             # If scared, reward for staying away
-            reward += dist * 0.3  # Increased reward for staying far away
+            reward += dist * 0.3  # Reward for staying far away
 
+        # Reward for improving position (closing distance)
         if hasattr(self, 'prev_dist_to_pacman'):
             dist_improvement = self.prev_dist_to_pacman - dist
             if dist_improvement > 0:
                 reward += dist_improvement * 0.5  # Reward closing distance
         self.prev_dist_to_pacman = dist
         
+        # Small step penalty to encourage efficiency
         reward -= 0.01
         
         return reward
+    
+    def close(self):
+        """Clean up resources."""
+        if self.pacman_env:
+            self.pacman_env.close()
+        
+        # Close VecNormalize wrapper if it was created
+        if self._vecnorm_wrapper is not None:
+            try:
+                self._vecnorm_wrapper.close()
+            except:
+                pass
+            self._vecnorm_wrapper = None

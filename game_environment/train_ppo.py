@@ -237,35 +237,82 @@ def evaluate(args):
     print(f"\nEvaluating {args.model_path} on {args.layout}")
     print(f"Episodes: {args.episodes}\n")
     
+    # Check in same directory first
+    model_dir = os.path.dirname(args.model_path)
+    vecnorm_path = os.path.join(model_dir, 'vecnormalize.pkl')
+    
+    # If not found and we're in a subdirectory (like "best/"), check parent
+    if not os.path.exists(vecnorm_path):
+        parent_dir = os.path.dirname(model_dir)
+        parent_vecnorm = os.path.join(parent_dir, 'vecnormalize.pkl')
+        if os.path.exists(parent_vecnorm):
+            vecnorm_path = parent_vecnorm
+    
+    has_vecnorm = os.path.exists(vecnorm_path)
+    
+    if has_vecnorm:
+        print(f"Found VecNormalize: {vecnorm_path}\n")
+    else:
+        print(f"No VecNormalize found (model trained without --normalize)\n")
+    
     render_mode = 'human' if args.render else None
-    env = make_masked_pacman_env(args.layout, args.ghost_type, max_steps=args.max_steps, render_mode=render_mode)
-    model = MaskablePPO.load(args.model_path)
+    
+    # Create environment (single env, not vectorized for eval with render)
+    env = make_masked_pacman_env(args.layout, args.ghost_type, 
+                                 max_steps=args.max_steps, render_mode=render_mode)
+    
+    env = DummyVecEnv([lambda: env])
+    
+    # Load VecNormalize if available
+    if has_vecnorm:
+        env = VecNormalize.load(vecnorm_path, env)
+        env.training = False
+        env.norm_reward = False
+        print("✓ VecNormalize loaded\n")
+    
+    # Load model
+    model = MaskablePPO.load(args.model_path, env=env)
     
     wins, total_reward = 0, []
     
     for ep in range(args.episodes):
-        obs, _ = env.reset()
-        done, ep_reward = False, 0
+        obs = env.reset()
+        done = False
+        ep_reward = 0
         
         while not done:
-            action, _ = model.predict(obs, deterministic=True, action_masks=env.action_masks())
-            obs, reward, terminated, truncated, info = env.step(action)
-            ep_reward += reward
-            done = terminated or truncated
+            # Get action masks from vectorized env
+            action_masks = env.env_method('action_masks')[0]
+            action, _ = model.predict(obs, deterministic=True, action_masks=action_masks)
+            
+            if isinstance(action, np.ndarray):
+                action = int(action.item())
+
+            obs, reward, done, info = env.step([action])
+            
+            ep_reward += reward[0]
+            done = done[0]
             
             if args.render:
-                env.render()
                 time.sleep(0.05)
+        
+        # Extract info from vectorized wrapper
+        info = info[0]
         
         if info.get('win'):
             wins += 1
         total_reward.append(ep_reward)
-        print(f"Ep {ep+1}: {'WIN' if info.get('win') else 'LOSE'} | Reward: {ep_reward:.1f}")
+        
+        result = 'WIN' if info.get('win') else 'LOSE'
+        score = info.get('raw_score', 0)
+        print(f"Ep {ep+1:3d}: {result} | Score: {score:4.0f} | Reward: {ep_reward:6.1f}")
     
     env.close()
-    print(f"\nWin Rate: {wins}/{args.episodes} ({100*wins/args.episodes:.1f}%)")
+    
+    print(f"\n{'='*60}")
+    print(f"Win Rate: {wins}/{args.episodes} ({100*wins/args.episodes:.1f}%)")
     print(f"Mean Reward: {np.mean(total_reward):.1f} ± {np.std(total_reward):.1f}")
-
+    print(f"{'='*60}\n")
 
 def main():
     parser = argparse.ArgumentParser(description='Train/Evaluate PPO Pac-Man')
