@@ -3,6 +3,7 @@ import sys
 import argparse
 import time
 import numpy as np
+import matplotlib.pyplot as plt
 from typing import Dict, Any, Optional, Union
 
 # --- Add game_environment to path to enable imports ---
@@ -107,10 +108,19 @@ def evaluate_pacman(
     ghost_type: str = 'random',
     render: bool = False,
     frame_delay: float = 0.05
-) -> Dict[str, float]:
-    """Runs evaluation episodes with correct environment setup and optional rendering."""
+) -> Dict[str, Any]:
+    """Runs evaluation episodes with correct environment setup and optional rendering.
+    
+    Returns dict with:
+        - win_rate: float
+        - avg_score: float
+        - std_score: float
+        - wins_per_episode: list of 1s and 0s (for moving average calculation)
+        - scores_per_episode: list of scores
+    """
     wins = 0
     scores = []
+    wins_per_episode = []  # Track individual episode results for moving average
     
     render_mode = 'human' if render else None
     
@@ -161,10 +171,13 @@ def evaluate_pacman(
                 
             steps += 1
         
+        # Record results
         if info.get('win'):
             wins += 1
+            wins_per_episode.append(1)
             result = "WIN"
         else:
+            wins_per_episode.append(0)
             result = "LOSE"
             
         score = info.get('raw_score', 0)
@@ -182,8 +195,92 @@ def evaluate_pacman(
     return {
         'win_rate': wins / n_episodes,
         'avg_score': np.mean(scores),
-        'std_score': np.std(scores)
+        'std_score': np.std(scores),
+        'wins_per_episode': wins_per_episode,
+        'scores_per_episode': scores
     }
+
+
+def plot_moving_average_comparison(stats_trained, stats_random, window=10, save_path='evaluation_comparison.png'):
+    """
+    Create a matplotlib visualization comparing PPO performance against trained vs random ghosts.
+    
+    Args:
+        stats_trained: Dict with 'wins_per_episode' key from evaluate_pacman (vs trained ghosts)
+        stats_random: Dict with 'wins_per_episode' key from evaluate_pacman (vs random ghosts)
+        window: Moving average window size
+        save_path: Where to save the output image
+    """
+    # Calculate moving averages
+    def moving_average(data, window):
+        """Calculate moving average with given window size."""
+        cumsum = np.cumsum(np.insert(data, 0, 0)) 
+        return (cumsum[window:] - cumsum[:-window]) / window
+    
+    wins_trained = stats_trained['wins_per_episode']
+    wins_random = stats_random['wins_per_episode']
+    
+    ma_trained = moving_average(wins_trained, window)
+    ma_random = moving_average(wins_random, window)
+    
+    # Episode numbers (offset by window/2 for centering moving average)
+    episodes_trained = np.arange(window, len(wins_trained) + 1)
+    episodes_random = np.arange(window, len(wins_random) + 1)
+    
+    # Create figure
+    plt.figure(figsize=(12, 7))
+    
+    # Plot moving averages
+    plt.plot(episodes_trained, ma_trained * 100, 
+             label=f'vs Trained Ghosts (DQN) - MA({window})', 
+             linewidth=2.5, color='#e74c3c', alpha=0.9)
+    plt.plot(episodes_random, ma_random * 100, 
+             label=f'vs Random Ghosts - MA({window})', 
+             linewidth=2.5, color='#3498db', alpha=0.9)
+    
+    # Add horizontal lines for overall win rates
+    overall_trained = stats_trained['win_rate'] * 100
+    overall_random = stats_random['win_rate'] * 100
+    
+    plt.axhline(y=overall_trained, color='#e74c3c', linestyle='--', 
+                linewidth=1.5, alpha=0.5, label=f'Overall vs Trained: {overall_trained:.1f}%')
+    plt.axhline(y=overall_random, color='#3498db', linestyle='--', 
+                linewidth=1.5, alpha=0.5, label=f'Overall vs Random: {overall_random:.1f}%')
+    
+    # Styling
+    plt.xlabel('Episode', fontsize=13, fontweight='bold')
+    plt.ylabel('Win Rate (%)', fontsize=13, fontweight='bold')
+    plt.title('PPO Pac-Man Performance: Trained vs Random Ghosts\nMediumClassic Layout', 
+              fontsize=15, fontweight='bold', pad=20)
+    plt.legend(loc='best', fontsize=11, framealpha=0.9)
+    plt.grid(True, alpha=0.3, linestyle='--')
+    
+    # Set y-axis limits
+    plt.ylim(-5, 105)
+    
+    # Add text box with statistics
+    stats_text = f'Final Statistics:\n'
+    stats_text += f'vs Trained: {overall_trained:.1f}% ({stats_trained["win_rate"]*len(wins_trained):.0f}/{len(wins_trained)} wins)\n'
+    stats_text += f'vs Random: {overall_random:.1f}% ({stats_random["win_rate"]*len(wins_random):.0f}/{len(wins_random)} wins)\n'
+    stats_text += f'\nAvg Scores:\n'
+    stats_text += f'vs Trained: {stats_trained["avg_score"]:.1f} ± {stats_trained["std_score"]:.1f}\n'
+    stats_text += f'vs Random: {stats_random["avg_score"]:.1f} ± {stats_random["std_score"]:.1f}'
+    
+    plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes,
+             fontsize=10, verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    plt.tight_layout()
+    
+    # Save figure
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"\n✓ Graph saved to: {save_path}")
+    
+    # Also display if in interactive mode
+    try:
+        plt.show()
+    except:
+        pass
 
 
 def main():
@@ -200,7 +297,7 @@ def main():
                        help="The layout used for training/evaluation.")
     parser.add_argument('--num-ghosts', type=int, default=4,
                        help="Number of ghosts in the layout.")
-    parser.add_argument('--episodes', type=int, default=50,
+    parser.add_argument('--episodes', type=int, default=100,
                        help="Number of evaluation episodes per scenario.")
     
     # Visualization args
@@ -208,6 +305,14 @@ def main():
                        help="Enable real-time visualization of the games.")
     parser.add_argument('--frame-delay', type=float, default=0.05,
                        help="Delay between frames in seconds (default: 0.05).")
+    
+    # Graph args
+    parser.add_argument('--plot', action='store_true',
+                       help="Generate matplotlib comparison graph.")
+    parser.add_argument('--window', type=int, default=10,
+                       help="Moving average window size (default: 10).")
+    parser.add_argument('--save-plot', type=str, default='evaluation_comparison.png',
+                       help="Path to save the comparison graph.")
 
     if not sys.argv[1:]:
         print("Required arguments missing.")
@@ -267,6 +372,19 @@ def main():
     print(f"| {'vs RANDOM GHOSTS (Baseline)':<30} | {stats_random['win_rate']*100:<9.1f}% | {stats_random['avg_score']:<7.1f} (±{stats_random['std_score']:<5.1f}) |")
 
     print(f"{'#'*70}\n")
+    
+    # --- Generate Plot ---
+    if args.plot:
+        print(f"\n{'='*60}")
+        print("GENERATING COMPARISON GRAPH")
+        print(f"{'='*60}")
+        
+        plot_moving_average_comparison(
+            stats_trained, 
+            stats_random, 
+            window=args.window,
+            save_path=args.save_plot
+        )
 
 
 if __name__ == '__main__':

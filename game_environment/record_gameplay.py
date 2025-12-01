@@ -1,32 +1,5 @@
-#!/usr/bin/env python3
-"""
-Simple video recorder for Pac-Man visualization.
-
-Captures the actual Tkinter rendering window and saves as MP4 or GIF.
-"""
-
-import argparse
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 import os
-import time
-import numpy as np
-import subprocess
-import sys
-
-# Try to import dependencies, install if missing
-try:
-    from PIL import ImageGrab
-    import imageio
-except ImportError:
-    print("Installing dependencies...")
-    subprocess.check_call(['pip', 'install', 'pillow', 'imageio[ffmpeg]'])
-    from PIL import ImageGrab
-    import imageio
-
-# Import models
-from stable_baselines3 import PPO, DQN
-from sb3_contrib import MaskablePPO
-from gym_env import PacmanEnv
-
 
 def record_gameplay_video(
     pacman_model_path,
@@ -46,10 +19,34 @@ def record_gameplay_video(
     print("Loading models...")
     print(f"{'='*60}")
 
-    # Load Pac-Man model (assumed MaskablePPO)
+    # ✅ Load Pac-Man model
     pacman_model = MaskablePPO.load(pacman_model_path)
-
-    # Load ghost models
+    
+    # ✅ Load VecNormalize stats (CRITICAL!)
+    vecnorm_path = None
+    
+    # Try same directory as model
+    model_dir = os.path.dirname(pacman_model_path)
+    candidate1 = os.path.join(model_dir, 'vecnormalize.pkl')
+    
+    # Try parent directory (for best/best_model.zip structure)
+    candidate2 = os.path.join(os.path.dirname(model_dir), 'vecnormalize.pkl')
+    
+    # Try two levels up
+    candidate3 = os.path.join(os.path.dirname(os.path.dirname(model_dir)), 'vecnormalize.pkl')
+    
+    for candidate in [candidate1, candidate2, candidate3]:
+        if os.path.exists(candidate):
+            vecnorm_path = candidate
+            print(f"Found VecNormalize stats: {vecnorm_path}")
+            break
+    
+    if not vecnorm_path:
+        print("⚠️  WARNING: VecNormalize stats not found!")
+        print("   Model will perform poorly without normalization.")
+        print(f"   Searched: {candidate1}, {candidate2}, {candidate3}")
+    
+    # ✅ Load ghost models
     ghost_models = {}
     for i in range(1, num_ghosts + 1):
         ghost_path = os.path.join(ghost_model_dir, f"ghost_{i}_v{ghost_version}")
@@ -59,23 +56,34 @@ def record_gameplay_video(
         else:
             print(f"Warning: Ghost {i} model not found: {ghost_path}")
 
-    # Create environment
-    env = PacmanEnv(
+    # ✅ Create environment WITH VecNormalize wrapper
+    base_env = PacmanEnv(
         layout_name=layout_name,
         ghost_policies=ghost_models,
         max_steps=max_steps,
-        render_mode='human',  # for Tkinter window
+        render_mode='human',
     )
+    
+    # ✅ Wrap in DummyVecEnv
+    env = DummyVecEnv([lambda: base_env])
+    
+    # ✅ Load VecNormalize wrapper if available
+    if vecnorm_path:
+        env = VecNormalize.load(vecnorm_path, env)
+        env.training = False  # Don't update stats during visualization
+        env.norm_reward = False  # Don't normalize rewards
+        print("✅ VecNormalize wrapper loaded and applied")
+    else:
+        print("⚠️  Proceeding WITHOUT VecNormalize (expect poor performance)")
 
     print("Starting game (will capture window)...")
     print("Do not minimize or cover the game window during recording!\n")
-    obs, _ = env.reset()
+    
+    # ✅ Reset returns vectorized obs
+    obs = env.reset()
 
     # Wait for the window to stabilize
     time.sleep(2.0)
-
-    # Optional: get window coords (if needed for region capture)
-    # Skip if you want full-screen capture; otherwise, you could implement region detection here
 
     frames = []
     step_count = 0
@@ -87,7 +95,6 @@ def record_gameplay_video(
         # Capture frame
         try:
             bbox = None
-            # Optionally, specify bbox here if known.
             frame = ImageGrab.grab(bbox=bbox)
             frames.append(np.array(frame))
         except Exception as e:
@@ -95,18 +102,32 @@ def record_gameplay_video(
             break
 
         if done:
-            # Small buffer after game ends
             if step_count - len(frames) > 10:
                 break
         else:
-            # Take action
-            action, _ = pacman_model.predict(obs, deterministic=True, action_masks=env.action_masks())
+            # ✅ Get action masks from base environment
+            action_masks = base_env.action_masks()
+            
+            # ✅ Predict with normalized observations
+            action, _ = pacman_model.predict(
+                obs, 
+                deterministic=True, 
+                action_masks=action_masks
+            )
+            
+            # ✅ Convert action
             if hasattr(action, 'item'):
                 action = int(action.item())
-            obs, reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-            if done:
-                final_info = info
+            elif isinstance(action, np.ndarray):
+                action = int(action[0])  # VecEnv returns array
+            
+            # ✅ Step through VecEnv
+            obs, reward, done_vec, info_vec = env.step([action])
+            
+            # ✅ Extract values from vectorized format
+            done = done_vec[0]
+            if done and len(info_vec) > 0:
+                final_info = info_vec[0]
 
         step_count += 1
         time.sleep(1.0 / fps)
@@ -119,12 +140,10 @@ def record_gameplay_video(
         return None
 
     print(f"Saving video to: {output_path}")
-    # Save the frames as GIF or MP4
     try:
         if format == 'gif' or output_path.endswith('.gif'):
             imageio.mimsave(output_path, frames, fps=fps, loop=0)
         else:
-            # For MP4, use codec='libx264'
             imageio.mimsave(output_path, frames, fps=fps, codec='libx264')
         print(f"Saved {format.upper()} to: {output_path}")
         print(f"Duration: {len(frames) / fps:.1f} seconds")
@@ -139,34 +158,3 @@ def record_gameplay_video(
     except Exception as e:
         print(f"Error saving video: {e}")
         return None
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Record Pac-Man gameplay video.')
-    parser.add_argument('--pacman-path', type=str, required=True, help='Path to Pac-Man model (without .zip)')
-    parser.add_argument('--ghost-dir', type=str, required=True, help='Directory with ghost models')
-    parser.add_argument('--ghost-version', type=int, required=True, help='Ghost version number')
-    parser.add_argument('--layout', type=str, default='mediumClassic', help='Layout name')
-    parser.add_argument('--num-ghosts', type=int, default=2, help='Number of ghosts')
-    parser.add_argument('--output', type=str, default='gameplay.mp4', help='Output filename')
-    parser.add_argument('--format', type=str, choices=['mp4','gif'], default='mp4', help='Output format')
-    parser.add_argument('--max-steps', type=int, default=500, help='Max steps')
-    parser.add_argument('--fps', type=int, default=10, help='Frames per second')
-    args = parser.parse_args()
-
-    # Run the recorder
-    record_gameplay_video(
-        pacman_model_path=args.pacman_path,
-        ghost_model_dir=args.ghost_dir,
-        ghost_version=args.ghost_version,
-        layout_name=args.layout,
-        num_ghosts=args.num_ghosts,
-        output_path=args.output,
-        max_steps=args.max_steps,
-        fps=args.fps,
-        format=args.format
-    )
-
-
-if __name__ == '__main__':
-    main()
