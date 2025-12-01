@@ -3,7 +3,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 from game import Directions
-from state_extractor import extract_ghost_observation, extract_pacman_observation, get_best_legal_action
+from state_extractor import extract_ghost_observation, extract_pacman_observation, get_legal_action_from_policy
 from gym_env import PacmanEnv
 
 class IndependentGhostEnv(gym.Env):
@@ -156,19 +156,24 @@ class IndependentGhostEnv(gym.Env):
         if ghost_state.scaredTimer == 0:
             # Chase mode: reward proximity to Pac-Man
             if dist <= 1:
-                reward += 5.0
+                reward += 8.0  # Very close - about to catch!
             elif dist <= 2:
-                reward += 2.0
+                reward += 4.0
             elif dist <= 4:
-                reward += 1.0 / dist
+                reward += 2.0
+            elif dist <= 6:
+                reward += 1.0
+            else:
+                # Penalty for being too far from Pac-Man
+                reward -= 0.1 * (dist - 6)
             
-            # Reward for closing distance
+            # Reward for closing distance (stronger incentive)
             if hasattr(self, 'prev_dist_to_pacman'):
                 dist_delta = self.prev_dist_to_pacman - dist
                 if dist_delta > 0:
-                    reward += dist_delta * 1.0
+                    reward += dist_delta * 2.0  # Stronger reward for approaching
                 elif dist_delta < 0:
-                    reward -= 0.3
+                    reward -= 1.0  # Stronger penalty for retreating
             
             # Coordination bonus when multiple ghosts are close
             other_ghost_dists = []

@@ -18,11 +18,7 @@ from layout import getLayout
 from ghostAgents import RandomGhost, DirectionalGhost
 from graphicsDisplay import PacmanGraphics
 from textDisplay import NullGraphics
-from state_extractor import extract_ghost_observation
-
-
-# Observation space dimension
-OBS_DIM = 33
+from state_extractor import extract_ghost_observation, extract_pacman_observation, PACMAN_OBS_DIM
 
 
 class PacmanEnv(gym.Env):
@@ -72,7 +68,7 @@ class PacmanEnv(gym.Env):
         
         # Observation and action spaces (reduced dimension for cleaner learning)
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(PACMAN_OBS_DIM,), dtype=np.float32
         )
         self.action_space = spaces.Discrete(5)
         
@@ -336,145 +332,17 @@ class PacmanEnv(gym.Env):
     
     def _get_observation(self) -> np.ndarray:
         """
-        Create 33-dimensional observation vector with carefully selected features.
+        Get observation using the unified extraction from state_extractor.
         
-        This is a cleaner, more focused observation space than the previous 53-dim version.
-        Key improvements:
-        - Removed noisy ghost direction features
-        - Removed redundant multi-distance wall features  
-        - Added clearer danger/food signals per direction
-        - Added escape-relevant features
+        Returns 33-dimensional vector with features for position, ghosts,
+        danger/food signals per direction, and game progress.
         """
-        obs = np.zeros(OBS_DIM, dtype=np.float32)
-        
-        pacman_pos = self.game_state.getPacmanPosition()
-        ghost_states = self.game_state.getGhostStates()
-        walls = self.game_state.getWalls()
-        food = self.game_state.getFood()
-        
-        # [0-1] Pacman position normalized to [-1, 1]
-        obs[0] = (pacman_pos[0] / self.width) * 2 - 1
-        obs[1] = (pacman_pos[1] / self.height) * 2 - 1
-        
-        # [2-9] Ghost relative positions (4 ghosts × 2 coords)
-        # Normalized by map dimensions, clamped to [-1, 1]
-        for i in range(4):
-            if i < len(ghost_states):
-                ghost_pos = ghost_states[i].getPosition()
-                obs[2 + i*2] = np.clip((ghost_pos[0] - pacman_pos[0]) / self.max_dist * 2, -1, 1)
-                obs[3 + i*2] = np.clip((ghost_pos[1] - pacman_pos[1]) / self.max_dist * 2, -1, 1)
-            else:
-                obs[2 + i*2] = 0.0
-                obs[3 + i*2] = 0.0
-        
-        # [10-13] Ghost scared timers (4 ghosts, normalized to [0, 1])
-        for i in range(4):
-            if i < len(ghost_states):
-                obs[10 + i] = ghost_states[i].scaredTimer / SCARED_TIME if SCARED_TIME > 0 else 0
-            else:
-                obs[10 + i] = 0.0
-        
-        # [14-17] Danger level per direction (N, S, E, W)
-        # Higher value = more dangerous (inverse distance to nearest dangerous ghost in that direction)
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # N, S, E, W
-        
-        for d_idx, (dx, dy) in enumerate(directions):
-            max_danger = 0.0
-            for ghost_state in ghost_states:
-                if ghost_state.scaredTimer > 0:
-                    continue  # Scared ghosts are not dangerous
-                
-                ghost_pos = ghost_state.getPosition()
-                rel_x = ghost_pos[0] - pacman_pos[0]
-                rel_y = ghost_pos[1] - pacman_pos[1]
-                
-                # Check if ghost is in this direction (within a cone)
-                in_direction = False
-                if dx != 0:  # East or West
-                    if rel_x * dx > 0 and abs(rel_y) <= abs(rel_x):
-                        in_direction = True
-                        dist = abs(rel_x) + abs(rel_y)
-                else:  # North or South
-                    if rel_y * dy > 0 and abs(rel_x) <= abs(rel_y):
-                        in_direction = True
-                        dist = abs(rel_x) + abs(rel_y)
-                
-                if in_direction:
-                    danger = 1.0 / (dist + 1)  # Inverse distance
-                    max_danger = max(max_danger, danger)
-            
-            obs[14 + d_idx] = max_danger
-        
-        # [18-21] Food signal per direction (N, S, E, W)
-        # Higher value = food is closer in that direction
-        for d_idx, (dx, dy) in enumerate(directions):
-            min_food_dist = float('inf')
-            
-            # Ray-cast in this direction until we hit a wall or find food
-            for dist in range(1, self.max_dist):
-                x = int(pacman_pos[0] + dx * dist)
-                y = int(pacman_pos[1] + dy * dist)
-                
-                if not (0 <= x < self.width and 0 <= y < self.height):
-                    break
-                if walls[x][y]:
-                    break
-                if food[x][y]:
-                    min_food_dist = dist
-                    break
-            
-            obs[18 + d_idx] = 1.0 / (min_food_dist + 1) if min_food_dist < float('inf') else 0.0
-        
-        # [22-25] Wall immediately adjacent (N, S, E, W) - binary
-        for d_idx, (dx, dy) in enumerate(directions):
-            x = int(pacman_pos[0] + dx)
-            y = int(pacman_pos[1] + dy)
-            if 0 <= x < self.width and 0 <= y < self.height:
-                obs[22 + d_idx] = 1.0 if walls[x][y] else 0.0
-            else:
-                obs[22 + d_idx] = 1.0
-        
-        # [26-27] Direction to nearest food (normalized dx, dy)
-        nearest_food = self._find_nearest_food()
-        if nearest_food is not None:
-            dx = nearest_food[0] - pacman_pos[0]
-            dy = nearest_food[1] - pacman_pos[1]
-            dist = abs(dx) + abs(dy)
-            if dist > 0:
-                obs[26] = dx / dist  # Normalized direction
-                obs[27] = dy / dist
-            else:
-                obs[26] = 0.0
-                obs[27] = 0.0
-            # [28] Nearest food distance (normalized, 1 = far, 0 = close)
-            obs[28] = 1.0 - min(dist / self.max_dist, 1.0)
-        else:
-            obs[26] = 0.0
-            obs[27] = 0.0
-            obs[28] = 1.0  # No food = close (will win)
-        
-        # [29] Food remaining ratio (1 = all food, 0 = no food)
-        obs[29] = self.game_state.getNumFood() / max(self.original_food, 1)
-        
-        # [30] Nearest capsule distance (normalized, 1 = close, 0 = far or none)
-        capsules = self.game_state.getCapsules()
-        if capsules:
-            min_cap_dist = min(abs(pacman_pos[0] - cx) + abs(pacman_pos[1] - cy) 
-                              for cx, cy in capsules)
-            obs[30] = 1.0 - min(min_cap_dist / self.max_dist, 1.0)
-        else:
-            obs[30] = 0.0  # No capsules
-        
-        # [31] Any ghost scared? (binary - important for strategy!)
-        obs[31] = 1.0 if any(gs.scaredTimer > 0 for gs in ghost_states) else 0.0
-        
-        # [32] Progress (steps / max_steps)
-        obs[32] = self.step_count / self.max_steps
-        
-        # Safety: Replace any NaN or Inf with 0
-        obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
-        
-        return np.clip(obs, -1.0, 1.0)
+        return extract_pacman_observation(
+            self.game_state,
+            self.original_food,
+            self.step_count,
+            self.max_steps
+        )
     
     def _find_nearest_food(self) -> Optional[Tuple[int, int]]:
         """Find the position of the nearest food pellet."""

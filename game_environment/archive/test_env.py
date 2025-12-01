@@ -2,12 +2,11 @@ import sys
 import numpy as np
 
 from game import Directions
-from state_extractor import extract_ghost_observation, extract_pacman_observation
+from state_extractor import extract_ghost_observation, extract_pacman_observation, get_legal_action_from_policy
 import ghostAgents
 import time
 from gym_env import PacmanEnv
 from stable_baselines3 import DQN, PPO
-from state_extractor import get_best_legal_action
 from game import Directions
 import numpy as np
 
@@ -16,7 +15,7 @@ def test_load_model():
 
     obs = np.random.randn(9)
     legal_actions = [Directions.NORTH, Directions.SOUTH, Directions.EAST]
-    action = get_best_legal_action(model, obs, legal_actions)
+    action = get_legal_action_from_policy(model, obs, legal_actions)
     print(f"Selected action: {action}")
     return
 
