@@ -242,7 +242,7 @@ class IndependentGhostEnv(gym.Env):
             reward += 100.0  # Caught Pac-Man!
             return reward
         elif self.game_state.isWin():
-            reward -= 30.0   # Pac-Man won
+            reward -= 50.0   # Pac-Man won
             return reward
         
         # Individual reward: proximity to Pac-Man
@@ -254,12 +254,16 @@ class IndependentGhostEnv(gym.Env):
         
         # Reward for being close (if not scared)
         if ghost_state.scaredTimer == 0:
-            reward += 2.0 / (dist + 1)
+            reward += 5.0 / (dist + 1)
 
-            if dist <= 1:  # Very close to Pac-Man
-                reward += 2.0  # Large bonus for applying pressure
-            elif dist <= 2:  # Close to Pac-Man
-                reward += 1.0  # Medium bonus
+            if hasattr(self, 'prev_dist_to_pacman'):
+                if dist < self.prev_dist_to_pacman:
+                    reward += (self.prev_dist_to_pacman - dist) * 2.0  # Changed from 0.5
+            
+            if dist <= 2:  # Very close to Pac-Man
+                reward += 10.0  # Large bonus for applying pressure
+            elif dist <= 1:  # Close to Pac-Man
+                reward += 20.0  # Big bonus
         else:
             # If scared, reward for staying away
             reward += dist * 0.3  # Reward for staying far away

@@ -329,7 +329,7 @@ def main():
     parser.add_argument('--lr-final', type=float, default=1e-5, help='Final LR when using decay')
     
     # PPO hyperparameters (research-backed defaults for stability)
-    parser.add_argument('--n-steps', type=int, default=256, help='Steps per env per update (smaller = faster updates)')
+    parser.add_argument('--n-steps', type=int, default=512, help='Steps per env per update (smaller = faster updates)')
     parser.add_argument('--batch-size', type=int, default=64, help='Minibatch size (n_steps*n_envs should be divisible)')
     parser.add_argument('--n-epochs', type=int, default=10, help='Number of PPO epochs per update')
     parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor')
