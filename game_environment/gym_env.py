@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pacman import ClassicGameRules, SCARED_TIME
 from game import Directions, Actions, Configuration, AgentState, GameStateData, Game
 from layout import getLayout
-from ghostAgents import RandomGhost, DirectionalGhost
+from ghostAgents import RandomGhost, DirectionalGhost, AmbushGhost, FlankingGhost, PatrolGhost, AggressiveGhost
 from graphicsDisplay import PacmanGraphics
 from textDisplay import NullGraphics
 from state_extractor import extract_ghost_observation, extract_pacman_observation, PACMAN_OBS_DIM
@@ -43,7 +43,8 @@ class PacmanEnv(gym.Env):
         max_steps: int = 500,
         render_mode: Optional[str] = None,
         frame_time: float = 0.05,
-        ghost_policies: Optional[Dict[int, Any]] = None
+        ghost_policies: Optional[Dict[int, Any]] = None,
+        trained_policy_prob: float = 1.0,  # Probability of using trained ghost policy per step
     ):
         super().__init__()
         
@@ -53,6 +54,7 @@ class PacmanEnv(gym.Env):
         self.render_mode = render_mode
         self.frame_time = frame_time
         self.ghost_policies = ghost_policies or {}
+        self.trained_policy_prob = trained_policy_prob  # For curriculum learning
         
         # Load layout
         self.layout = getLayout(layout_name)
@@ -87,24 +89,85 @@ class PacmanEnv(gym.Env):
         self._display_initialized = False
         
     def _create_ghosts(self) -> List:
-        """Create ghost agents based on ghost_type."""
+        """Create ghost agents based on ghost_type.
+        
+        Supported types:
+        - 'random': Uniform random actions
+        - 'directional': 80% chase/flee, 20% random
+        - 'ambush': Targets position ahead of Pac-Man
+        - 'flanking': Coordinates with other ghost to surround
+        - 'patrol': Chases when far, backs off when close
+        - 'aggressive': 95% direct chase
+        - 'mixed': Diverse team for curriculum training
+        """
         if self.ghost_type == "random":
             return [RandomGhost(i + 1) for i in range(self.num_ghosts)]
         elif self.ghost_type == "directional":
             return [DirectionalGhost(i + 1) for i in range(self.num_ghosts)]
+        elif self.ghost_type == "ambush":
+            return [AmbushGhost(i + 1) for i in range(self.num_ghosts)]
+        elif self.ghost_type == "flanking":
+            return [FlankingGhost(i + 1, reference_ghost=1) for i in range(self.num_ghosts)]
+        elif self.ghost_type == "patrol":
+            return [PatrolGhost(i + 1) for i in range(self.num_ghosts)]
+        elif self.ghost_type == "aggressive":
+            return [AggressiveGhost(i + 1) for i in range(self.num_ghosts)]
+        elif self.ghost_type == "mixed":
+            # Diverse team: one chaser, one ambusher (good for training)
+            ghosts = []
+            ghost_classes = [DirectionalGhost, AmbushGhost, FlankingGhost, PatrolGhost]
+            for i in range(self.num_ghosts):
+                cls = ghost_classes[i % len(ghost_classes)]
+                if cls == FlankingGhost:
+                    ghosts.append(cls(i + 1, reference_ghost=1))
+                else:
+                    ghosts.append(cls(i + 1))
+            return ghosts
         else:
             return [RandomGhost(i + 1) for i in range(self.num_ghosts)]
     
     def _get_ghost_action(self, ghost_idx: int) -> str:
-        """Get action for a ghost, using RL policy if available."""
+        """Get action for a ghost, using RL policy if available.
+        
+        With trained_policy_prob < 1.0, stochastically mix trained and random
+        ghost behavior to prevent Pac-Man from forgetting how to handle
+        simpler opponents (curriculum learning / catastrophic forgetting mitigation).
+        """
         legal_actions = self.game_state.getLegalActions(ghost_idx)
         
-        if ghost_idx in self.ghost_policies and self.ghost_policies[ghost_idx] is not None:
+        # Stochastic policy mixing: with prob (1 - trained_policy_prob), use random
+        use_trained = (
+            ghost_idx in self.ghost_policies 
+            and self.ghost_policies[ghost_idx] is not None
+            and np.random.random() < self.trained_policy_prob
+        )
+        
+        if use_trained:
             ghost_obs = extract_ghost_observation(self.game_state, ghost_idx)
-            action, _ = self.ghost_policies[ghost_idx].predict(ghost_obs, deterministic=False)
+            policy = self.ghost_policies[ghost_idx]
             
             action_map = {0: Directions.NORTH, 1: Directions.SOUTH, 
                           2: Directions.EAST, 3: Directions.WEST}
+            dir_to_action = {Directions.NORTH: 0, Directions.SOUTH: 1,
+                            Directions.EAST: 2, Directions.WEST: 3}
+            
+            # Get Q-values and mask illegal actions
+            import torch
+            obs_tensor = torch.tensor(ghost_obs, dtype=torch.float32).unsqueeze(0)
+            # Put tensor on same device as model
+            obs_tensor = obs_tensor.to(policy.device)
+            with torch.no_grad():
+                q_values = policy.q_net(obs_tensor).cpu().numpy()[0]
+            
+            # Create mask for legal actions
+            legal_mask = np.full(4, -np.inf)
+            for legal_dir in legal_actions:
+                if legal_dir in dir_to_action:
+                    legal_mask[dir_to_action[legal_dir]] = 0.0
+            
+            # Apply mask and select best legal action
+            masked_q = q_values + legal_mask
+            action = np.argmax(masked_q)
             direction = action_map.get(int(action), Directions.STOP)
             
             if direction in legal_actions:
@@ -227,92 +290,106 @@ class PacmanEnv(gym.Env):
     
     def _calculate_reward(self) -> float:
         """
-        Calculate shaped reward with strong, clear signals.
+        Calculate shaped reward optimized for fast, stable convergence.
         
-        Key principles:
-        1. Terminal rewards dominate: win/lose is most important
-        2. Ghost avoidance uses distance-based penalty
-        3. Food collection provides steady progress signal
-        4. Eating scared ghosts is bonus
-        5. Step penalty encourages efficiency
+        Design principles (based on RL research best practices):
+        1. Dense rewards for food collection provide steady learning signal
+        2. Strong but not overwhelming ghost penalties for survival
+        3. Terminal bonuses reinforce winning
+        4. Efficiency incentives via step penalty
+        
+        Reward scale designed so cumulative episode reward is meaningful:
+        - Winning episode: ~50-80 net reward
+        - Losing episode: ~-30 to -50 net reward (depending on food collected)
         """
         reward = 0.0
         
-        # ============== TERMINAL REWARDS (Dominant!) ==============
+        # ============== TERMINAL REWARDS ==============
         if self.game_state.isWin():
-            # Strong bonus for winning - more than sum of all food rewards
+            # Win bonus scales with efficiency
             efficiency_bonus = max(0, 1.0 - self.step_count / self.max_steps) * 10.0
-            reward += 50.0 + efficiency_bonus  # Total: 50-60
+            reward += 30.0 + efficiency_bonus  # 30-40 total win bonus
             return reward
         
         if self.game_state.isLose():
-            # Strong penalty for losing
-            reward -= 50.0
+            # Losing penalty - significant but not overwhelming
+            # This allows food rewards to still provide positive signal
+            reward -= 30.0
             return reward
         
-        # ============== FOOD REWARDS (smaller scale) ==============
+        # ============== FOOD REWARDS (primary learning signal) ==============
         food_eaten = self.prev_food_count - self.game_state.getNumFood()
         if food_eaten > 0:
-            # Modest reward per food (total ~100-150 for all food vs 50-60 for winning)
-            # This ensures winning bonus > food rewards, but food still matters
-            reward += food_eaten * 1.0
+            # Base reward per food + progress bonus
+            # Total for all food: ~0.8 * 120 = ~96 (more than win bonus alone)
+            # But win is certain only if you survive, so survival still matters!
+            reward += food_eaten * 0.6
             
-            # Progressive bonus: reward increases as more food is eaten
+            # Progressive bonus: more reward as game progresses (up to +0.4 per food)
             food_progress = 1.0 - (self.game_state.getNumFood() / max(self.original_food, 1))
-            reward += food_eaten * 0.5 * food_progress  # Up to +1.5 per food near end
+            reward += food_eaten * 0.4 * food_progress
         
-        # Reward for moving toward food
+        # Small reward for moving toward food (exploration guidance)
         curr_food_dist = self._get_min_food_distance()
         if self.prev_distance_to_food < float('inf') and curr_food_dist < float('inf'):
             dist_improvement = self.prev_distance_to_food - curr_food_dist
-            reward += dist_improvement * 0.2
+            if dist_improvement > 0:
+                reward += 0.05  # Small fixed bonus for approaching food
         
-        # ============== GHOST INTERACTION REWARDS ==============
+        # ============== GHOST DANGER (scaled penalties) ==============
         pacman_pos = self.game_state.getPacmanPosition()
         ghost_states = self.game_state.getGhostStates()
         
-        # Check for eating scared ghosts
-        ghosts_eaten_now = self._count_ghosts_eaten()
-        new_ghosts_eaten = ghosts_eaten_now - self.prev_num_ghosts_eaten
-        if new_ghosts_eaten > 0:
-            reward += new_ghosts_eaten * 5.0  # Nice bonus but less than win
-        
-        # Danger avoidance - CRITICAL for survival
+        # Find minimum distance to dangerous (non-scared) ghost
         min_danger_dist = float('inf')
         for ghost_state in ghost_states:
-            if ghost_state.scaredTimer == 0:  # Dangerous ghost
+            if ghost_state.scaredTimer == 0:
                 ghost_pos = ghost_state.getPosition()
                 dist = abs(pacman_pos[0] - ghost_pos[0]) + abs(pacman_pos[1] - ghost_pos[1])
                 min_danger_dist = min(min_danger_dist, dist)
         
+        # Distance-based danger penalties
         if min_danger_dist < float('inf'):
             if min_danger_dist <= 1:
-                # VERY CLOSE - strong penalty (this leads to death)
-                reward -= 3.0
-            elif min_danger_dist <= 2:
-                # Close - moderate danger
-                reward -= 1.0
-            elif min_danger_dist <= 3:
-                # Approaching danger
+                # Adjacent to ghost - very likely to die next turn
+                reward -= 2.0
+            elif min_danger_dist == 2:
+                # One step away - high danger
+                reward -= 0.8
+            elif min_danger_dist == 3:
+                # Two steps away - moderate danger  
                 reward -= 0.3
+            elif min_danger_dist <= 5:
+                # Nearby - slight caution
+                reward -= 0.1
         
-        # Reward for escaping danger
+        # ============== SCARED GHOST HUNTING ==============
+        ghosts_eaten_now = self._count_ghosts_eaten()
+        new_ghosts_eaten = ghosts_eaten_now - self.prev_num_ghosts_eaten
+        if new_ghosts_eaten > 0:
+            # Good bonus for eating ghosts
+            reward += new_ghosts_eaten * 5.0
+        
+        # Reward for escaping from danger (when previously close)
         curr_min_ghost_dist = self._get_min_dangerous_ghost_distance()
         if (self.prev_min_ghost_dist < float('inf') and 
             curr_min_ghost_dist < float('inf') and
-            self.prev_min_ghost_dist < 4 and 
+            self.prev_min_ghost_dist <= 3 and 
             curr_min_ghost_dist > self.prev_min_ghost_dist):
-            reward += (curr_min_ghost_dist - self.prev_min_ghost_dist) * 0.5
+            # Escaped! Small reward for good evasion
+            reward += (curr_min_ghost_dist - self.prev_min_ghost_dist) * 0.2
         
         # ============== CAPSULE REWARDS ==============
         capsule_eaten = self.prev_capsule_count - len(self.game_state.getCapsules())
         if capsule_eaten > 0:
             reward += 2.0
-            if min_danger_dist < 5:
-                reward += 1.0  # Strategic capsule usage
+            # Extra bonus if used strategically (ghost was close)
+            if min_danger_dist <= 4:
+                reward += 1.5
         
         # ============== TIME PRESSURE ==============
-        reward -= 0.02  # Slightly higher step penalty to encourage speed
+        # Minimal step penalty - just enough to encourage efficiency
+        reward -= 0.01
         
         return reward
     

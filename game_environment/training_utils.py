@@ -1,154 +1,20 @@
-"""Shared utilities for training scripts."""
+"""Training utilities for Pac-Man RL agents."""
 
-import os
 import time
 import numpy as np
-from datetime import datetime
-from typing import Callable, Dict, Optional, List
+from typing import Callable, Dict
 
-from sb3_contrib import MaskablePPO
-from stable_baselines3 import DQN
-from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormalize
 from stable_baselines3.common.callbacks import BaseCallback
-
-from gym_env import PacmanEnv, make_masked_pacman_env
-
-
-# =============================================================================
-# Directory Management
-# =============================================================================
-
-def create_training_dirs(base_dir: str, prefix: str, layout: str = None):
-    """Create timestamped output directories for a training run.
-    
-    Args:
-        base_dir: Base directory (e.g., 'training_output', 'logs', 'models')
-        prefix: Prefix for run folder (e.g., 'ppo', 'mixed')
-        layout: Optional layout name to include in folder name
-    
-    Returns:
-        Tuple of (run_dir, dirs_dict with 'models' and 'logs' keys)
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if layout:
-        run_name = f"{prefix}_{layout}_{timestamp}"
-    else:
-        run_name = f"{prefix}_{timestamp}"
-    run_dir = os.path.join(base_dir, run_name)
-    
-    dirs = {
-        'root': run_dir,
-        'models': os.path.join(run_dir, 'models') if 'mixed' in prefix else run_dir,
-        'logs': os.path.join(run_dir, 'logs') if 'mixed' in prefix else run_dir,
-    }
-    
-    # For PPO, model_dir and log_dir are separate top-level dirs
-    if 'ppo' in prefix:
-        dirs['models'] = run_dir
-        dirs['logs'] = run_dir
-    
-    for key in ['models', 'logs']:
-        os.makedirs(dirs[key], exist_ok=True)
-    
-    return run_dir, dirs
-
-
-def create_mixed_dirs(base_dir: str = "training_output"):
-    """Create output directories for mixed adversarial training.
-    
-    Returns:
-        Tuple of (run_dir, dirs_dict)
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(base_dir, f"mixed_{timestamp}")
-    dirs = {
-        'models': os.path.join(run_dir, 'models'),
-        'logs': os.path.join(run_dir, 'logs'),
-    }
-    for d in dirs.values():
-        os.makedirs(d, exist_ok=True)
-    return run_dir, dirs
-
-
-# =============================================================================
-# Model Loading
-# =============================================================================
-
-def load_ghost_models(paths: Dict[int, str]) -> Optional[Dict[int, DQN]]:
-    """Load ghost models from paths.
-    
-    Args:
-        paths: Dict mapping ghost index to model path, e.g., {1: 'path1.zip', 2: 'path2.zip'}
-    
-    Returns:
-        Dict {idx: model} or None if no valid paths
-    """
-    if not paths:
-        return None
-    
-    models = {}
-    for idx, path in paths.items():
-        if path and os.path.exists(path):
-            models[idx] = DQN.load(path)
-    
-    return models if models else None
-
-
-# =============================================================================
-# Environment Creation
-# =============================================================================
-
-def create_vec_env(layout_name: str, ghost_type: str, num_envs: int, 
-                   max_steps: int = 500, normalize: bool = False, 
-                   norm_stats_path: str = None, training: bool = True):
-    """Create vectorized training environment.
-    
-    Args:
-        layout_name: Layout to use
-        ghost_type: Type of ghost agent ('random' or 'directional')
-        num_envs: Number of parallel environments
-        max_steps: Max steps per episode
-        normalize: Whether to use VecNormalize
-        norm_stats_path: Path to load normalization stats from (for eval/resume)
-        training: Whether this is for training (updates running stats) or eval (frozen stats)
-    
-    Returns:
-        Vectorized environment
-    """
-    def make_env():
-        return make_masked_pacman_env(layout_name, ghost_type, max_steps=max_steps)
-    
-    env = DummyVecEnv([make_env for _ in range(num_envs)])
-    env = VecMonitor(env)
-    
-    if normalize:
-        if norm_stats_path and os.path.exists(norm_stats_path):
-            env = VecNormalize.load(norm_stats_path, env)
-            env.training = training
-            env.norm_reward = training
-        else:
-            env = VecNormalize(env, norm_obs=True, norm_reward=True, 
-                              clip_obs=10.0, clip_reward=10.0)
-    
-    return env
 
 
 # =============================================================================
 # Learning Rate Schedules
 # =============================================================================
 
-def linear_schedule(initial_value: float, final_value: float = 1e-5) -> Callable[[float], float]:
-    """Linear learning rate schedule from initial to final value.
-    
-    Args:
-        initial_value: Starting learning rate
-        final_value: Ending learning rate
-    
-    Returns:
-        Schedule function that takes progress_remaining and returns LR
-    """
+def linear_schedule(initial: float, final: float = 1e-5) -> Callable[[float], float]:
+    """Linear learning rate decay from initial to final."""
     def schedule(progress_remaining: float) -> float:
-        return final_value + progress_remaining * (initial_value - final_value)
+        return final + progress_remaining * (initial - final)
     return schedule
 
 
@@ -156,169 +22,191 @@ def linear_schedule(initial_value: float, final_value: float = 1e-5) -> Callable
 # Callbacks
 # =============================================================================
 
-class MetricsCallback(BaseCallback):
-    """Logs win/loss metrics during training."""
+class WinRateCallback(BaseCallback):
+    """Track win rate during Pac-Man training."""
     
-    def __init__(self, log_freq: int = 100):
+    def __init__(self, print_freq: int = 50):
         super().__init__()
         self.wins = 0
-        self.losses = 0
         self.episodes = 0
-        self.log_freq = log_freq
-        self.recent_wins = []
-        
+        self.recent = []
+        self.print_freq = print_freq
+    
     def _on_step(self) -> bool:
         for i, done in enumerate(self.locals.get('dones', [])):
             if done:
                 self.episodes += 1
                 info = self.locals.get('infos', [{}])[i]
+                win = 1 if info.get('win', False) else 0
+                self.wins += win
+                self.recent.append(win)
+                if len(self.recent) > 100:
+                    self.recent.pop(0)
                 
-                if info.get('win', False):
-                    self.wins += 1
-                    self.recent_wins.append(1)
-                else:
-                    self.losses += 1
-                    self.recent_wins.append(0)
-                
-                if len(self.recent_wins) > 100:
-                    self.recent_wins.pop(0)
-                
-                if self.episodes % self.log_freq == 0:
-                    win_rate = self.wins / max(1, self.wins + self.losses)
-                    recent_rate = sum(self.recent_wins) / max(1, len(self.recent_wins))
-                    print(f"\nEp {self.episodes} | Win Rate: {win_rate:.1%} | Recent: {recent_rate:.1%}")
+                if self.episodes % self.print_freq == 0:
+                    rate = self.wins / self.episodes * 100
+                    recent = sum(self.recent) / len(self.recent) * 100
+                    print(f"\nEp {self.episodes} | Win: {rate:.1f}% | Recent: {recent:.1f}%")
         return True
-
-
-class NormalizeSyncCallback(BaseCallback):
-    """Syncs VecNormalize stats between training and eval envs periodically."""
     
-    def __init__(self, eval_env, sync_freq: int = 10000):
+    def get_win_rate(self) -> float:
+        return self.wins / max(1, self.episodes)
+
+
+class CatchRateCallback(BaseCallback):
+    """Track catch rate during Ghost training."""
+    
+    def __init__(self, print_freq: int = 50):
         super().__init__()
-        self.eval_env = eval_env
-        self.sync_freq = sync_freq
-        
+        self.catches = 0
+        self.episodes = 0
+        self.recent = []
+        self.print_freq = print_freq
+    
     def _on_step(self) -> bool:
-        if self.num_timesteps % self.sync_freq == 0:
-            if hasattr(self.training_env, 'obs_rms') and hasattr(self.eval_env, 'obs_rms'):
-                self.eval_env.obs_rms = self.training_env.obs_rms
-                self.eval_env.ret_rms = self.training_env.ret_rms
+        for i, done in enumerate(self.locals.get('dones', [])):
+            if done:
+                self.episodes += 1
+                info = self.locals.get('infos', [{}])[i]
+                catch = 1 if info.get('ghost_won', False) else 0
+                self.catches += catch
+                self.recent.append(catch)
+                if len(self.recent) > 100:
+                    self.recent.pop(0)
+                
+                if self.episodes % self.print_freq == 0:
+                    rate = self.catches / self.episodes * 100
+                    recent = sum(self.recent) / len(self.recent) * 100
+                    print(f"\nEp {self.episodes} | Catch: {rate:.1f}% | Recent: {recent:.1f}%")
         return True
+    
+    def get_catch_rate(self) -> float:
+        return self.catches / max(1, self.episodes)
 
 
 # =============================================================================
 # Evaluation
 # =============================================================================
 
-def evaluate_pacman(model, layout: str, ghost_models: Dict = None, 
-                    ghost_type: str = 'random', n_episodes: int = 50, 
-                    render: bool = False, verbose: bool = False) -> Dict:
-    """Evaluate Pac-Man model and return statistics.
+def evaluate_with_ghosts(
+    pacman_model,
+    layout_name: str,
+    vec_normalize=None,
+    ghost_models: Dict = None,
+    episodes: int = 100,
+) -> Dict:
+    """Evaluate Pac-Man against ghosts.
     
     Args:
-        model: Trained MaskablePPO model
-        layout: Layout name
+        pacman_model: Trained MaskablePPO model
+        layout_name: Layout name
+        vec_normalize: VecNormalize with obs_rms (optional)
         ghost_models: Dict of ghost DQN models {1: model, 2: model} or None for random
-        ghost_type: Ghost type if ghost_models is None ('random' or 'directional')
-        n_episodes: Number of evaluation episodes
-        render: Whether to render games visually
-        verbose: Print per-episode results
+        episodes: Number of evaluation episodes
     
     Returns:
-        Dict with 'win_rate', 'wins', 'losses', 'mean_score', 'std_score', 'mean_reward'
+        Dict with 'win_rate', 'wins', 'mean_score', 'mean_steps'
     """
+    from gym_env import PacmanEnv
+    
     wins = 0
     scores = []
-    rewards = []
-    render_mode = 'human' if render else None
+    steps_list = []
     
-    for ep in range(n_episodes):
+    for ep in range(episodes):
         if ghost_models:
-            env = PacmanEnv(layout_name=layout, ghost_policies=ghost_models, 
-                           max_steps=500, render_mode=render_mode)
+            env = PacmanEnv(layout_name=layout_name, ghost_policies=ghost_models, max_steps=500)
         else:
-            env = PacmanEnv(layout_name=layout, ghost_type=ghost_type, 
-                           max_steps=500, render_mode=render_mode)
+            env = PacmanEnv(layout_name=layout_name, ghost_type='random', max_steps=500)
         
         obs, _ = env.reset()
+        
+        # Normalize observation if needed
+        if vec_normalize is not None and hasattr(vec_normalize, 'obs_rms'):
+            obs = (obs - vec_normalize.obs_rms.mean) / np.sqrt(vec_normalize.obs_rms.var + 1e-8)
+            obs = np.clip(obs, -10.0, 10.0)
+        
         done = False
-        ep_reward = 0
+        steps = 0
         
         while not done:
-            action, _ = model.predict(obs, deterministic=True, action_masks=env.action_masks())
-            if isinstance(action, np.ndarray):
-                action = int(action.item())
-            obs, reward, terminated, truncated, info = env.step(action)
-            ep_reward += reward
+            action_masks = env.action_masks()
+            action, _ = pacman_model.predict(obs, action_masks=action_masks)
+            obs, _, terminated, truncated, info = env.step(int(action))
             done = terminated or truncated
+            steps += 1
             
-            if render:
-                time.sleep(0.05)
+            if vec_normalize is not None and hasattr(vec_normalize, 'obs_rms'):
+                obs = (obs - vec_normalize.obs_rms.mean) / np.sqrt(vec_normalize.obs_rms.var + 1e-8)
+                obs = np.clip(obs, -10.0, 10.0)
         
-        win = info.get('win', False)
-        score = info.get('score', 0)
-        
-        if win:
+        if info.get('win', False):
             wins += 1
-        scores.append(score)
-        rewards.append(ep_reward)
-        
-        if verbose:
-            result = 'WIN' if win else 'LOSE'
-            print(f"Ep {ep+1}: {result} | Reward: {ep_reward:.1f}")
+        scores.append(info.get('score', 0))
+        steps_list.append(steps)
         
         env.close()
         
-        if render:
-            time.sleep(0.5)
+        if (ep + 1) % 20 == 0:
+            print(f"  Episode {ep+1}/{episodes}: Win Rate so far: {wins/(ep+1)*100:.1f}%")
     
     return {
-        'win_rate': wins / n_episodes,
+        'win_rate': wins / episodes,
         'wins': wins,
-        'losses': n_episodes - wins,
-        'mean_score': np.mean(scores),
-        'std_score': np.std(scores),
-        'mean_reward': np.mean(rewards),
-        'std_reward': np.std(rewards),
+        'losses': episodes - wins,
+        'mean_score': float(np.mean(scores)),
+        'std_score': float(np.std(scores)),
+        'mean_steps': float(np.mean(steps_list)),
     }
 
 
-def quick_evaluate(model, layout: str, ghost_models: Dict = None, n: int = 50) -> float:
-    """Quick evaluation returning just win rate (for mixed training).
-    
-    Args:
-        model: Trained MaskablePPO model
-        layout: Layout name
-        ghost_models: Dict of ghost DQN models or None for random
-        n: Number of episodes
+def render_game(
+    pacman_model,
+    layout_name: str,
+    vec_normalize=None,
+    ghost_models: Dict = None,
+    delay: float = 0.05,
+) -> Dict:
+    """Render a single game.
     
     Returns:
-        Win rate as float (0.0 to 1.0)
+        Dict with 'win', 'score', 'steps'
     """
-    wins = 0
-    for _ in range(n):
-        if ghost_models:
-            env = PacmanEnv(layout_name=layout, ghost_policies=ghost_models, max_steps=500)
-        else:
-            env = PacmanEnv(layout_name=layout, ghost_type='random', max_steps=500)
-        
-        obs, _ = env.reset()
-        done = False
-        while not done:
-            action, _ = model.predict(obs, deterministic=True, action_masks=env.action_masks())
-            if isinstance(action, np.ndarray):
-                action = int(action.item())
-            obs, _, t, tr, info = env.step(action)
-            done = t or tr
-        
-        if info.get('win'):
-            wins += 1
-        env.close()
+    from gym_env import PacmanEnv
     
-    return wins / n
-
-
-def print_eval_summary(results: Dict, n_episodes: int):
-    """Print evaluation summary."""
-    print(f"\nWin Rate: {results['wins']}/{n_episodes} ({results['win_rate']*100:.1f}%)")
-    print(f"Mean Reward: {results['mean_reward']:.1f} ± {results['std_reward']:.1f}")
+    if ghost_models:
+        env = PacmanEnv(layout_name=layout_name, ghost_policies=ghost_models,
+                       max_steps=500, render_mode='human')
+    else:
+        env = PacmanEnv(layout_name=layout_name, ghost_type='random',
+                       max_steps=500, render_mode='human')
+    
+    obs, _ = env.reset()
+    
+    if vec_normalize is not None and hasattr(vec_normalize, 'obs_rms'):
+        obs = (obs - vec_normalize.obs_rms.mean) / np.sqrt(vec_normalize.obs_rms.var + 1e-8)
+        obs = np.clip(obs, -10.0, 10.0)
+    
+    done = False
+    steps = 0
+    
+    while not done:
+        action_masks = env.action_masks()
+        action, _ = pacman_model.predict(obs, action_masks=action_masks)
+        obs, _, terminated, truncated, info = env.step(int(action))
+        done = terminated or truncated
+        steps += 1
+        time.sleep(delay)
+        
+        if vec_normalize is not None and hasattr(vec_normalize, 'obs_rms'):
+            obs = (obs - vec_normalize.obs_rms.mean) / np.sqrt(vec_normalize.obs_rms.var + 1e-8)
+            obs = np.clip(obs, -10.0, 10.0)
+    
+    result = {
+        'win': info.get('win', False),
+        'score': info.get('score', 0),
+        'steps': steps,
+    }
+    
+    env.close()
+    return result

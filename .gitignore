@@ -2,9 +2,13 @@ __pycache__/
 venv/
 *.pdf
 logs/
+*.log
 models/
 .github/
 *.zip
 videos/
+training_output/
+training/
+adversarial_training/
 
 training_output/
