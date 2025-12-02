@@ -18,7 +18,7 @@ from util import manhattanDistance
 # =============================================================================
 
 PACMAN_OBS_DIM = 33
-GHOST_OBS_DIM = 25
+GHOST_OBS_DIM = 33  # Expanded from 25 to add smarter features
 SCARED_TIME = 40  # Default scared timer duration
 MAX_GHOSTS = 4
 
@@ -199,7 +199,7 @@ def _find_nearest_food(pacman_pos, food) -> Optional[Tuple[int, int]]:
 
 def extract_ghost_observation(game_state, ghost_index: int) -> np.ndarray:
     """
-    Extract a 25-dimensional observation vector for a ghost agent.
+    Extract a 33-dimensional observation vector for a ghost agent.
     
     Features (all normalized to [0, 1]):
         [0-1]   This ghost's position (x, y)
@@ -211,13 +211,19 @@ def extract_ghost_observation(game_state, ghost_index: int) -> np.ndarray:
         [13-16] Legal action flags (N, S, E, W)
         [17-20] Other ghost distances (up to 4 values)
         [21-24] Direction to Pac-Man one-hot (N, S, E, W)
+        === NEW FEATURES FOR SMARTER GHOSTS ===
+        [25-28] Pac-Man's last move direction one-hot (N, S, E, W)
+        [29]    Pac-Man escape routes count (normalized)
+        [30]    Flanking score (are ghosts approaching from different sides?)
+        [31]    BFS distance ratio (actual_path / manhattan - walls in way)
+        [32]    Best direction to Pac-Man (using BFS) one-hot index
     
     Args:
         game_state: The current game state
         ghost_index: Ghost agent index (1-based, as 0 is Pac-Man)
     
     Returns:
-        np.ndarray: 25-dimensional float32 observation vector
+        np.ndarray: 33-dimensional float32 observation vector
     
     Raises:
         ValueError: If ghost_index is invalid
@@ -259,7 +265,8 @@ def extract_ghost_observation(game_state, ghost_index: int) -> np.ndarray:
     idx += 2
     
     # [8] Distance to Pac-Man
-    obs[idx] = manhattanDistance(ghost_pos, pacman_pos) / max_dist
+    manhattan_dist = manhattanDistance(ghost_pos, pacman_pos)
+    obs[idx] = manhattan_dist / max_dist
     idx += 1
     
     # [9-12] Wall sensors (N, S, E, W)
@@ -280,9 +287,11 @@ def extract_ghost_observation(game_state, ghost_index: int) -> np.ndarray:
     # [17-20] Other ghost distances
     num_agents = game_state.getNumAgents()
     other_dists = []
+    other_ghost_positions = []
     for i in range(1, num_agents):
         if i != ghost_index:
             other_pos = game_state.getGhostPosition(i)
+            other_ghost_positions.append(other_pos)
             other_dists.append(manhattanDistance(ghost_pos, other_pos) / max_dist)
     
     # Pad to 4 values
@@ -299,8 +308,123 @@ def extract_ghost_observation(game_state, ghost_index: int) -> np.ndarray:
         obs[idx if dy > 0 else idx + 1] = 1.0  # North or South
     else:
         obs[idx + 2 if dx > 0 else idx + 3] = 1.0  # East or West
+    idx += 4
+    
+    # === NEW FEATURES FOR SMARTER GHOSTS ===
+    
+    # [25-28] Pac-Man's last move direction one-hot (N, S, E, W)
+    # Get from agentMoved info if available
+    pacman_dir_idx = idx
+    if hasattr(game_state.data, '_agentMoved') and game_state.data._agentMoved == 0:
+        # Pac-Man just moved, check direction from configuration
+        pacman_state = game_state.getPacmanState()
+        pacman_direction = pacman_state.getDirection()
+        dir_map = {Directions.NORTH: 0, Directions.SOUTH: 1, 
+                   Directions.EAST: 2, Directions.WEST: 3}
+        if pacman_direction in dir_map:
+            obs[pacman_dir_idx + dir_map[pacman_direction]] = 1.0
+    idx += 4
+    
+    # [29] Pac-Man escape routes count (how many legal moves Pac-Man has)
+    pacman_legal = game_state.getLegalActions(0)
+    # Remove STOP since it's not really an escape
+    escape_count = len([a for a in pacman_legal if a != Directions.STOP])
+    obs[idx] = escape_count / 4.0  # Normalize to [0, 1]
+    idx += 1
+    
+    # [30] Flanking score: are ghosts approaching from different sides?
+    flanking_score = 0.0
+    if other_ghost_positions:
+        # Check if this ghost and another ghost are on opposite sides of Pac-Man
+        for other_pos in other_ghost_positions:
+            my_dx = ghost_pos[0] - pacman_pos[0]
+            my_dy = ghost_pos[1] - pacman_pos[1]
+            other_dx = other_pos[0] - pacman_pos[0]
+            other_dy = other_pos[1] - pacman_pos[1]
+            
+            # Flanking if on opposite sides (x or y)
+            x_flanking = (my_dx > 0 and other_dx < 0) or (my_dx < 0 and other_dx > 0)
+            y_flanking = (my_dy > 0 and other_dy < 0) or (my_dy < 0 and other_dy > 0)
+            
+            if x_flanking or y_flanking:
+                flanking_score = 1.0
+                break
+    obs[idx] = flanking_score
+    idx += 1
+    
+    # [31] BFS distance ratio (actual_path / manhattan)
+    # This tells the ghost if there are walls in the way
+    bfs_dist = _bfs_distance(walls, ghost_pos, pacman_pos, width, height)
+    if manhattan_dist > 0:
+        # Ratio > 1 means walls are in the way
+        obs[idx] = min(bfs_dist / max(manhattan_dist, 1), 3.0) / 3.0  # Normalize, cap at 3x
+    else:
+        obs[idx] = 0.0  # Already at target
+    idx += 1
+    
+    # [32] Best direction to Pac-Man using BFS (0-3 for N,S,E,W normalized to 0-1)
+    best_dir = _get_best_direction_bfs(walls, ghost_pos, pacman_pos, width, height, legal_actions)
+    obs[idx] = best_dir / 3.0  # 0, 0.33, 0.67, 1.0 for N, S, E, W
     
     return obs.astype(np.float32)
+
+
+def _bfs_distance(walls, start, goal, width, height) -> int:
+    """Compute BFS (shortest path) distance between two points."""
+    from collections import deque
+    
+    start = (int(start[0]), int(start[1]))
+    goal = (int(goal[0]), int(goal[1]))
+    
+    if start == goal:
+        return 0
+    
+    queue = deque([(start, 0)])
+    visited = {start}
+    
+    while queue:
+        (x, y), dist = queue.popleft()
+        
+        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nx, ny = x + dx, y + dy
+            
+            if (nx, ny) == goal:
+                return dist + 1
+            
+            if (0 <= nx < width and 0 <= ny < height and 
+                not walls[nx][ny] and (nx, ny) not in visited):
+                visited.add((nx, ny))
+                queue.append(((nx, ny), dist + 1))
+    
+    # No path found, return large distance
+    return width + height
+
+
+def _get_best_direction_bfs(walls, ghost_pos, pacman_pos, width, height, legal_actions) -> int:
+    """Get the best direction to move towards Pac-Man using BFS."""
+    ghost_pos = (int(ghost_pos[0]), int(ghost_pos[1]))
+    pacman_pos = (int(pacman_pos[0]), int(pacman_pos[1]))
+    
+    # Direction mapping: N=0, S=1, E=2, W=3
+    dir_deltas = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+    dir_names = [Directions.NORTH, Directions.SOUTH, Directions.EAST, Directions.WEST]
+    
+    best_dir = 0
+    best_dist = float('inf')
+    
+    for i, (dx, dy) in enumerate(dir_deltas):
+        if dir_names[i] not in legal_actions:
+            continue
+            
+        nx, ny = ghost_pos[0] + dx, ghost_pos[1] + dy
+        
+        if 0 <= nx < width and 0 <= ny < height and not walls[nx][ny]:
+            dist = _bfs_distance(walls, (nx, ny), pacman_pos, width, height)
+            if dist < best_dist:
+                best_dist = dist
+                best_dir = i
+    
+    return best_dir
 
 
 # =============================================================================

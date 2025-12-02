@@ -2,22 +2,14 @@
 """
 Unified Training Script for Pac-Man vs Ghosts.
 
-Supports:
-  - Pac-Man only training (PPO against random/directional ghosts)
-  - Adversarial training (alternating Pac-Man PPO and Ghost DQN)
-  - Evaluation and rendering of trained models
+Training Modes:
+  - pacman: Train Pac-Man against random/directional ghosts
+  - adversarial: Alternating Pac-Man (PPO) and Ghost (DQN) training
 
 Usage:
-  # Train Pac-Man against random ghosts
-  python train.py --mode pacman --layout mediumClassic --timesteps 500000
-
-  # Adversarial training (Pac-Man + Ghosts)
-  python train.py --mode adversarial --layout mediumClassic --iterations 5
-
-  # Evaluate trained models
+  python train.py --mode pacman --timesteps 500000
+  python train.py --mode adversarial --iterations 10
   python train.py --eval --training-dir <path>
-
-  # Render games
   python train.py --render --training-dir <path> --games 5
 """
 
@@ -90,17 +82,7 @@ class Trainer:
         use_trained_ghosts: bool = False,
         trained_policy_prob: float = 0.7,
     ) -> MaskablePPO:
-        """Train Pac-Man agent.
-        
-        Args:
-            timesteps: Training timesteps
-            num_envs: Parallel environments
-            ghost_type: 'random' or 'directional' (if not using trained)
-            use_trained_ghosts: Use trained ghost models
-            trained_policy_prob: Per-step probability of using trained ghost policy (0.0-1.0)
-                                 Lower values mix in more random behavior to prevent forgetting.
-                                 Default 0.7 means 70% trained, 30% random per step.
-        """
+        """Train Pac-Man agent."""
         print(f"\n{'='*60}")
         print(f"Training Pac-Man | {timesteps:,} timesteps | {num_envs} envs")
         print(f"{'='*60}")
@@ -110,15 +92,14 @@ class Trainer:
         else:
             print(f"Ghosts: {ghost_type}")
         
-        # Create environments with stochastic ghost mixing
+        # Create environments
         def make_env(rank: int):
             def _init():
                 if use_trained_ghosts and self.ghost_models:
-                    # Use trained ghosts with stochastic mixing
                     env = PacmanEnv(
                         layout_name=self.layout_name,
                         ghost_policies=self.ghost_models,
-                        trained_policy_prob=trained_policy_prob,  # Per-step mixing
+                        trained_policy_prob=trained_policy_prob,
                         max_steps=500
                     )
                 else:
@@ -132,13 +113,12 @@ class Trainer:
                 return env
             return _init
         
-        # All environments use stochastic mixing
         env_fns = [make_env(i) for i in range(num_envs)]
         
         train_env = DummyVecEnv(env_fns)
         train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True)
         
-        eval_env = DummyVecEnv([make_env(False, 9999)])
+        eval_env = DummyVecEnv([make_env(9999)])
         eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, training=False)
         
         # Model setup
@@ -198,24 +178,24 @@ class Trainer:
         ghost_index: int,
         timesteps: int = 100000,
         num_envs: int = 4,
+        warmup_mode: bool = False,
     ) -> DQN:
-        """Train a single ghost agent.
-        
-        Args:
-            ghost_index: Which ghost to train (1-based)
-            timesteps: Training timesteps
-            num_envs: Parallel environments
-        """
+        """Train a single ghost agent."""
         print(f"\n{'='*60}")
-        print(f"Training Ghost {ghost_index} | {timesteps:,} timesteps")
+        if warmup_mode:
+            print(f"WARMUP Training Ghost {ghost_index} vs RANDOM Pac-Man | {timesteps:,} timesteps")
+        else:
+            print(f"Training Ghost {ghost_index} vs TRAINED Pac-Man | {timesteps:,} timesteps")
         print(f"{'='*60}")
         
-        if self.pacman_model is None:
-            raise ValueError("Must train Pac-Man first")
+        pacman_policy = None if warmup_mode else self.pacman_model
         
-        # Get normalization stats for Pac-Man observations
+        if not warmup_mode and self.pacman_model is None:
+            raise ValueError("Must train Pac-Man first (or use warmup_mode=True)")
+        
+        # Get normalization stats for Pac-Man observations (only if using trained Pac-Man)
         pacman_obs_rms = None
-        if self.pacman_vec_normalize is not None:
+        if not warmup_mode and self.pacman_vec_normalize is not None:
             pacman_obs_rms = self.pacman_vec_normalize.obs_rms
         
         # Other trained ghosts
@@ -227,7 +207,7 @@ class Trainer:
                 env = IndependentGhostEnv(
                     ghost_index=ghost_index,
                     layout_name=self.layout_name,
-                    pacman_policy=self.pacman_model,
+                    pacman_policy=pacman_policy,
                     other_ghost_policies=other_ghosts,
                     pacman_obs_rms=pacman_obs_rms,
                     max_steps=500
@@ -243,22 +223,44 @@ class Trainer:
         # Model setup - optimized for ghost chasing task
         policy_kwargs = dict(net_arch=[256, 256], activation_fn=torch.nn.ReLU)
         
-        model = DQN(
-            'MlpPolicy', train_env,
-            learning_rate=5e-4,  # Higher LR for faster learning
-            buffer_size=50000,   # Smaller buffer = more recent experiences
-            learning_starts=500, # Start learning sooner
-            batch_size=128,      # Larger batches for stability
-            gamma=0.95,          # Lower gamma = focus on immediate rewards
-            target_update_interval=500,  # More frequent target updates
-            exploration_fraction=0.5,    # Explore longer
-            exploration_final_eps=0.1,   # Keep some exploration
-            train_freq=4,        # Train every 4 steps
-            gradient_steps=2,    # More gradient updates
-            policy_kwargs=policy_kwargs,
-            tensorboard_log=str(self.output_dir / 'logs'),
-            device=self.device, verbose=1
-        )
+        # If we already have a model for this ghost, continue training
+        if ghost_index in self.ghost_models:
+            model = DQN(
+                'MlpPolicy', train_env,
+                learning_rate=5e-4,
+                buffer_size=50000,
+                learning_starts=500,
+                batch_size=128,
+                gamma=0.95,
+                target_update_interval=500,
+                exploration_fraction=0.5,
+                exploration_final_eps=0.1,
+                train_freq=4,
+                gradient_steps=2,
+                policy_kwargs=policy_kwargs,
+                tensorboard_log=str(self.output_dir / 'logs'),
+                device=self.device, verbose=1
+            )
+            # Load weights from previous model
+            model.q_net.load_state_dict(self.ghost_models[ghost_index].q_net.state_dict())
+            model.q_net_target.load_state_dict(self.ghost_models[ghost_index].q_net_target.state_dict())
+        else:
+            model = DQN(
+                'MlpPolicy', train_env,
+                learning_rate=5e-4,
+                buffer_size=50000,
+                learning_starts=500,
+                batch_size=128,
+                gamma=0.95,
+                target_update_interval=500,
+                exploration_fraction=0.5,
+                exploration_final_eps=0.1,
+                train_freq=4,
+                gradient_steps=2,
+                policy_kwargs=policy_kwargs,
+                tensorboard_log=str(self.output_dir / 'logs'),
+                device=self.device, verbose=1
+            )
         
         # Callbacks
         callbacks = CallbackList([
@@ -282,48 +284,46 @@ class Trainer:
     def train_adversarial(
         self,
         iterations: int = 5,
-        warmup_timesteps: int = 300000,
+        pacman_warmup_timesteps: int = 250000,
+        ghost_warmup_timesteps: int = 150000,
         pacman_timesteps: int = 100000,
         ghost_timesteps: int = 100000,
         num_envs: int = 8,
         initial_trained_prob: float = 0.4,
         final_trained_prob: float = 0.9,
     ):
-        """Run adversarial training loop with curriculum learning.
+        """Run adversarial training with symmetric warmup and curriculum learning.
         
-        Uses adaptive opponent annealing inspired by AlphaStar/OpenAI Five:
-        - Start with more random ghosts (easier) to solidify fundamentals
-        - Gradually increase trained ghost probability to build robustness
-        - Maintains diversity to prevent catastrophic forgetting
-        
-        Args:
-            iterations: Number of Pac-Man/Ghost training cycles
-            warmup_timesteps: Initial Pac-Man training vs random ghosts
-            pacman_timesteps: Pac-Man timesteps per iteration
-            ghost_timesteps: Ghost timesteps per iteration (per ghost)
-            num_envs: Parallel environments
-            initial_trained_prob: Starting trained ghost probability (e.g., 0.4 = 40% trained)
-            final_trained_prob: Final trained ghost probability (e.g., 0.9 = 90% trained)
+        Phases:
+        1. Pac-Man warmup vs random ghosts
+        2. Ghost warmup vs random Pac-Man (symmetric!)
+        3. Adversarial iterations with curriculum
         """
         print(f"\n{'='*60}")
-        print(f"ADVERSARIAL TRAINING (Curriculum Learning)")
+        print(f"ADVERSARIAL TRAINING (Symmetric Warmup + Curriculum)")
         print(f"{'='*60}")
         print(f"Layout: {self.layout_name} ({self.num_ghosts} ghosts)")
         print(f"Iterations: {iterations}")
-        print(f"Warmup: {warmup_timesteps:,} | Per-iter Pac-Man: {pacman_timesteps:,}")
-        print(f"Per-iter Ghost: {ghost_timesteps:,} | Envs: {num_envs}")
+        print(f"Pac-Man warmup: {pacman_warmup_timesteps:,} | Ghost warmup: {ghost_warmup_timesteps:,}/ghost")
+        print(f"Per-iter Pac-Man: {pacman_timesteps:,} | Per-iter Ghost: {ghost_timesteps:,}")
         print(f"Trained ghost prob: {initial_trained_prob:.0%} → {final_trained_prob:.0%}")
         print(f"Output: {self.output_dir}")
         print(f"{'='*60}\n")
         
-        # Phase 1: Warmup - Pac-Man vs random ghosts
-        print("\n*** PHASE 1: WARMUP ***")
-        self.train_pacman(warmup_timesteps, num_envs, ghost_type='random')
+        # Phase 1a: Warmup Pac-Man vs random ghosts
+        if pacman_warmup_timesteps > 0:
+            print("\n*** PHASE 1a: PAC-MAN WARMUP (vs random ghosts) ***")
+            self.train_pacman(pacman_warmup_timesteps, num_envs, ghost_type='random')
+        
+        # Phase 1b: Warmup Ghosts vs random Pac-Man (SYMMETRIC!)
+        if ghost_warmup_timesteps > 0:
+            print("\n*** PHASE 1b: GHOST WARMUP (vs random Pac-Man) ***")
+            for ghost_idx in range(1, self.num_ghosts + 1):
+                self.train_ghost(ghost_idx, ghost_warmup_timesteps, num_envs // 2 or 1, warmup_mode=True)
         
         # Phase 2: Adversarial iterations with curriculum learning
         for iteration in range(1, iterations + 1):
             # Compute annealed trained_policy_prob for this iteration
-            # Linear interpolation from initial to final over iterations
             if iterations > 1:
                 progress = (iteration - 1) / (iterations - 1)  # 0.0 to 1.0
             else:
@@ -332,9 +332,9 @@ class Trainer:
             
             print(f"\n*** ITERATION {iteration}/{iterations} (trained_prob={trained_policy_prob:.0%}) ***")
             
-            # Train ghosts
+            # Train ghosts against trained Pac-Man
             for ghost_idx in range(1, self.num_ghosts + 1):
-                self.train_ghost(ghost_idx, ghost_timesteps, num_envs // 2 or 1)
+                self.train_ghost(ghost_idx, ghost_timesteps, num_envs // 2 or 1, warmup_mode=False)
             
             # Train Pac-Man against mixed ghosts (curriculum learning)
             self.train_pacman(
@@ -475,7 +475,7 @@ def main():
     parser.add_argument('--layout', type=str, default='mediumClassic')
     parser.add_argument('--training-dir', type=str, help='Training directory (for eval/render)')
     parser.add_argument('--output-dir', type=str, help='Output directory')
-    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'])
+    parser.add_argument('--device', type=str, default='cuda', choices=['auto', 'cpu', 'cuda'])
     
     # Pac-Man training
     parser.add_argument('--timesteps', type=int, default=500000)
@@ -483,11 +483,16 @@ def main():
     parser.add_argument('--ghost-type', type=str, default='random',
                        choices=['random', 'directional'])
     
-    # Adversarial training (curriculum learning)
+    # Adversarial training (symmetric warmup + curriculum learning)
     parser.add_argument('--iterations', type=int, default=5)
-    parser.add_argument('--warmup-timesteps', type=int, default=300000)
-    parser.add_argument('--pacman-timesteps', type=int, default=100000)
-    parser.add_argument('--ghost-timesteps', type=int, default=100000)
+    parser.add_argument('--pacman-warmup-timesteps', type=int, default=250000,
+                       help='Pac-Man warmup timesteps vs random ghosts (0 to skip)')
+    parser.add_argument('--ghost-warmup-timesteps', type=int, default=150000,
+                       help='Ghost warmup timesteps per ghost vs random Pac-Man (0 to skip)')
+    parser.add_argument('--pacman-timesteps', type=int, default=200000,
+                       help='Pac-Man timesteps per adversarial iteration')
+    parser.add_argument('--ghost-timesteps', type=int, default=150000,
+                       help='Ghost timesteps per adversarial iteration (per ghost)')
     parser.add_argument('--initial-trained-prob', type=float, default=0.4,
                        help='Initial trained ghost probability (default 0.4 = 60%% random)')
     parser.add_argument('--final-trained-prob', type=float, default=0.9,
@@ -535,7 +540,8 @@ def main():
     elif args.mode == 'adversarial':
         trainer.train_adversarial(
             iterations=args.iterations,
-            warmup_timesteps=args.warmup_timesteps,
+            pacman_warmup_timesteps=args.pacman_warmup_timesteps,
+            ghost_warmup_timesteps=args.ghost_warmup_timesteps,
             pacman_timesteps=args.pacman_timesteps,
             ghost_timesteps=args.ghost_timesteps,
             num_envs=args.num_envs,

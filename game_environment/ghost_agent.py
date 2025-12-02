@@ -37,7 +37,7 @@ class IndependentGhostEnv(gym.Env):
         )
         
         self.observation_space = spaces.Box(
-            low=0.0, high=1.0, shape=(25,), dtype=np.float32
+            low=0.0, high=1.0, shape=(33,), dtype=np.float32  # Expanded for smarter features
         )
         
         self.action_space = spaces.Discrete(4)
@@ -191,7 +191,7 @@ class IndependentGhostEnv(gym.Env):
         if not terminated and not truncated:
             ghost_obs = extract_ghost_observation(self.game_state, self.ghost_index)
         else:
-            ghost_obs = np.zeros(25, dtype=np.float32)
+            ghost_obs = np.zeros(33, dtype=np.float32)  # Match new observation size
         
         info = {
             'ghost_won': self.game_state.isLose(),
@@ -210,6 +210,8 @@ class IndependentGhostEnv(gym.Env):
         2. Dense distance-based shaping that ALWAYS prefers being closer
         3. Bonus for actively closing distance
         4. In scared mode: reward for running away
+        5. NEW: Flanking bonus for coordinated attacks
+        6. NEW: Reward for cornering (reducing Pac-Man's escape routes)
         """
         # Terminal rewards (dominant signal)
         if self.game_state.isLose():  # Caught Pac-Man
@@ -266,6 +268,53 @@ class IndependentGhostEnv(gym.Env):
                 reward += 2.0 * dist_delta  # negative since dist_delta < 0
         
         self.prev_dist_to_pacman = dist
+        
+        # === NEW REWARDS FOR SMARTER BEHAVIOR ===
+        
+        # Flanking bonus: reward if ghosts are on opposite sides of Pac-Man
+        flanking_bonus = 0.0
+        num_agents = self.game_state.getNumAgents()
+        for other_idx in range(1, num_agents):
+            if other_idx != self.ghost_index:
+                other_pos = self.game_state.getGhostPosition(other_idx)
+                other_state = self.game_state.getGhostState(other_idx)
+                
+                # Only count non-scared ghosts for flanking
+                if other_state.scaredTimer > 0:
+                    continue
+                
+                my_dx = ghost_pos[0] - pacman_pos[0]
+                my_dy = ghost_pos[1] - pacman_pos[1]
+                other_dx = other_pos[0] - pacman_pos[0]
+                other_dy = other_pos[1] - pacman_pos[1]
+                
+                # Flanking if on opposite sides (x or y)
+                x_flanking = (my_dx > 0 and other_dx < 0) or (my_dx < 0 and other_dx > 0)
+                y_flanking = (my_dy > 0 and other_dy < 0) or (my_dy < 0 and other_dy > 0)
+                
+                if x_flanking or y_flanking:
+                    # Bonus scales with how close both ghosts are
+                    other_dist = manhattanDistance(pacman_pos, other_pos)
+                    if dist <= 5 and other_dist <= 5:
+                        flanking_bonus = 3.0  # Both close and flanking = great!
+                    elif dist <= 8 or other_dist <= 8:
+                        flanking_bonus = 1.5  # At least one close and flanking
+                    else:
+                        flanking_bonus = 0.5  # Flanking but far
+                    break
+        
+        reward += flanking_bonus
+        
+        # Cornering bonus: reward for reducing Pac-Man's escape routes
+        pacman_legal = self.game_state.getLegalActions(0)
+        escape_count = len([a for a in pacman_legal if a != 'Stop'])
+        
+        # Fewer escapes = better (4 is worst for ghost, 1 is best)
+        if escape_count == 1:
+            reward += 2.0  # Pac-Man nearly cornered!
+        elif escape_count == 2:
+            reward += 1.0  # Limited options
+        # No bonus/penalty for 3-4 escapes
         
         # Small step penalty to encourage efficiency
         reward -= 0.1

@@ -1,61 +1,108 @@
 # Pac-Man vs Ghost RL
 
-Adversarial reinforcement learning project training MaskablePPO Pac-Man agents against DQN Ghost agents using the Berkeley Pac-Man game engine.
+Adversarial reinforcement learning project training Pac-Man (MaskablePPO) against Ghost agents (DQN) using the Berkeley Pac-Man game engine.
+
+## Features
+
+- **Symmetric Warmup**: Both Pac-Man and Ghosts learn fundamentals before facing each other
+- **Curriculum Learning**: Gradually increases difficulty during adversarial training
+- **Smart Ghost Features**: BFS pathfinding, flanking detection, escape route counting
+- **Action Masking**: Legal move enforcement for both agents
 
 ## Quick Start
 
-### 1. Train Initial Pac-Man (vs Random Ghosts)
 ```bash
 cd game_environment
-python train_ppo.py --layout mediumClassic --timesteps 2000000
+
+# Adversarial training with symmetric warmup (recommended)
+python train.py --mode adversarial --iterations 10
+
+# Pac-Man only (vs random ghosts)
+python train.py --mode pacman --timesteps 500000
+
+# Evaluate trained models
+python train.py --eval --training-dir training/mediumClassic_YYYYMMDD_HHMMSS
+
+# Watch games
+python train.py --render --training-dir training/mediumClassic_YYYYMMDD_HHMMSS --games 5
 ```
 
-### 2. Adversarial Training (vs Learned Ghosts)
+## Training Modes
+
+### Adversarial Training (Recommended)
 ```bash
-python train_mixed.py --model-path models/.../final_model.zip --rounds 10
+python train.py --mode adversarial \
+    --iterations 10 \
+    --pacman-warmup-timesteps 250000 \
+    --ghost-warmup-timesteps 150000 \
+    --pacman-timesteps 200000 \
+    --ghost-timesteps 150000
 ```
 
-### 3. Evaluate
+Training phases:
+1. **Pac-Man Warmup**: Learn navigation vs random ghosts
+2. **Ghost Warmup**: Learn chasing vs random Pac-Man  
+3. **Adversarial**: Alternating training with curriculum learning
+
+### Pac-Man Only
 ```bash
-# vs Random Ghosts
-python train_mixed.py --eval --model-path training_output/.../pacman_best.zip --episodes 500
-
-# vs Trained Ghosts  
-python train_mixed.py --eval --model-path training_output/.../pacman_best.zip \
-    --ghost1 training_output/.../ghost_1_v10.zip \
-    --ghost2 training_output/.../ghost_2_v10.zip \
-    --episodes 500
-
-# With visualization
-python train_mixed.py --eval --render --episodes 5 --model-path ...
+python train.py --mode pacman --timesteps 500000 --ghost-type random
 ```
 
 ## Project Structure
 
 ```
 game_environment/
-├── train_ppo.py          # Initial Pac-Man training (vs random ghosts)
-├── train_mixed.py        # Adversarial training + evaluation
-├── training_utils.py     # Shared utilities
-├── gym_env.py            # Gymnasium environment for Pac-Man
-├── ghost_agent.py        # Ghost training environment
-├── state_extractor.py    # Observation extraction
+├── train.py              # Unified training script
+├── gym_env.py            # Pac-Man Gymnasium environment
+├── ghost_agent.py        # Ghost DQN environment
+├── state_extractor.py    # Observation extraction (33-dim ghost, 33-dim Pac-Man)
+├── training_utils.py     # Callbacks, evaluation, rendering
 ├── layouts/              # Game layouts
-├── training_output/      # Saved models and logs
-└── archive/              # Old/experimental scripts
+└── training/             # Saved models and logs
 ```
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `train_ppo.py` | Train Pac-Man with MaskablePPO against random ghosts |
-| `train_mixed.py` | Adversarial self-play training + evaluation |
-| `gym_env.py` | Pac-Man Gymnasium environment with action masking |
-| `ghost_agent.py` | Ghost DQN training environment |
 
 ## Algorithms
 
-- **Pac-Man**: MaskablePPO (sb3-contrib) with action masking for legal moves
-- **Ghosts**: DQN (stable-baselines3) with chase/flee reward shaping
+| Agent | Algorithm | Observation | Actions |
+|-------|-----------|-------------|---------|
+| **Pac-Man** | MaskablePPO | 33-dim (position, ghosts, food, danger) | 5 (N, S, E, W, Stop) |
+| **Ghosts** | DQN | 33-dim (position, Pac-Man, walls, BFS, flanking) | 4 (N, S, E, W) |
+
+## Ghost Intelligence Features
+
+The ghost observation includes:
+- **BFS Distance**: Actual shortest path (not just Manhattan distance)
+- **Best Direction**: Optimal move using pathfinding
+- **Flanking Score**: Detects when ghosts approach from opposite sides
+- **Escape Routes**: Count of Pac-Man's available moves
+- **Pac-Man Direction**: Predict where Pac-Man is heading
+
+## Command Reference
+
+```bash
+# Full adversarial training
+python train.py --mode adversarial --iterations 10
+
+# Skip warmup (pure self-play)
+python train.py --mode adversarial --iterations 15 \
+    --pacman-warmup-timesteps 0 --ghost-warmup-timesteps 0
+
+# Evaluate vs random and trained ghosts
+python train.py --eval --training-dir <path> --episodes 100
+
+# Render with trained ghosts
+python train.py --render --training-dir <path> --games 5
+
+# Render vs random ghosts
+python train.py --render --training-dir <path> --games 5 --vs-random
+```
+
+## Requirements
+
+- Python 3.8+
+- PyTorch (CUDA recommended, ~3.5x faster)
+- stable-baselines3
+- sb3-contrib (for MaskablePPO)
+- gymnasium
 
