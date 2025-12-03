@@ -39,6 +39,7 @@ from training_utils import (
     CatchRateCallback,
     evaluate_with_ghosts,
     render_game,
+    load_maskable_ppo_cross_platform,
 )
 
 
@@ -401,67 +402,8 @@ class Trainer:
         return {}
     
     def _load_pacman_cross_platform(self, model_path: Path) -> MaskablePPO:
-        """Load MaskablePPO model trained on different platform (e.g., Windows -> Linux).
-        
-        This extracts just the neural network weights and loads them into a fresh model,
-        avoiding pickle compatibility issues across Python versions/platforms.
-        """
-        import zipfile
-        import io
-        
-        print(f"Cross-platform loading from {model_path}...")
-        
-        # First, inspect the saved weights to determine architecture
-        with zipfile.ZipFile(model_path, 'r') as z:
-            if 'policy.pth' not in z.namelist():
-                raise ValueError("No policy.pth found in model zip")
-            
-            with z.open('policy.pth') as f:
-                buffer = io.BytesIO(f.read())
-                policy_state = torch.load(buffer, map_location='cpu', weights_only=False)
-        
-        # Detect network architecture from saved weights
-        # Look at mlp_extractor.policy_net.0.weight shape to determine hidden size
-        if 'mlp_extractor.policy_net.0.weight' in policy_state:
-            hidden_size = policy_state['mlp_extractor.policy_net.0.weight'].shape[0]
-            print(f"Detected hidden layer size: {hidden_size}")
-        else:
-            hidden_size = 64  # Default
-            print(f"Using default hidden layer size: {hidden_size}")
-        
-        # Create a fresh model with the matching architecture
-        def make_env():
-            env = PacmanEnv(layout_name=self.layout_name)
-            env = ActionMasker(env, lambda e: e.action_masks())
-            return Monitor(env)
-        
-        dummy_env = DummyVecEnv([make_env])
-        model = MaskablePPO(
-            "MlpPolicy", 
-            dummy_env, 
-            device=self.device,
-            policy_kwargs={"net_arch": [hidden_size, hidden_size]}  # Match saved architecture
-        )
-        
-        # Load the policy weights
-        model.policy.load_state_dict(policy_state)
-        print(f"Loaded policy weights via cross-platform method")
-        
-        # Try to load optimizer state (optional, for continued training)
-        with zipfile.ZipFile(model_path, 'r') as z:
-            if 'policy.optimizer.pth' in z.namelist():
-                try:
-                    with z.open('policy.optimizer.pth') as f:
-                        buffer = io.BytesIO(f.read())
-                        optim_state = torch.load(buffer, map_location=self.device, weights_only=False)
-                    model.policy.optimizer.load_state_dict(optim_state)
-                    print(f"Loaded optimizer state")
-                except Exception as e:
-                    print(f"Warning: Could not load optimizer state ({e}), will use fresh optimizer")
-        
-        dummy_env.close()
-        print(f"Cross-platform load successful!")
-        return model
+        """Load MaskablePPO model trained on different platform (e.g., Windows -> Linux)."""
+        return load_maskable_ppo_cross_platform(model_path, self.layout_name, self.device)
     
     def load(self, training_dir: str, iteration: int = None):
         """Load models from a training directory."""

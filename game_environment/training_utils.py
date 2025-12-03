@@ -1,7 +1,11 @@
 """Training utilities for Pac-Man RL agents."""
 
 import time
+import zipfile
+import io
+from pathlib import Path
 import numpy as np
+import torch
 from typing import Callable, Dict
 
 from stable_baselines3.common.callbacks import BaseCallback
@@ -16,6 +20,89 @@ def linear_schedule(initial: float, final: float = 1e-5) -> Callable[[float], fl
     def schedule(progress_remaining: float) -> float:
         return final + progress_remaining * (initial - final)
     return schedule
+
+
+# =============================================================================
+# Cross-Platform Model Loading
+# =============================================================================
+
+def load_maskable_ppo_cross_platform(
+    model_path: Path,
+    layout_name: str,
+    device: str = 'auto',
+):
+    """Load MaskablePPO model trained on different platform (e.g., Windows -> Linux).
+    
+    This extracts just the neural network weights and loads them into a fresh model,
+    avoiding pickle compatibility issues across Python versions/platforms.
+    
+    Args:
+        model_path: Path to the .zip model file
+        layout_name: Name of the layout (for creating dummy env)
+        device: Device to load model on ('auto', 'cpu', 'cuda')
+    
+    Returns:
+        MaskablePPO model with loaded weights
+    """
+    from sb3_contrib import MaskablePPO
+    from sb3_contrib.common.wrappers import ActionMasker
+    from stable_baselines3.common.vec_env import DummyVecEnv
+    from stable_baselines3.common.monitor import Monitor
+    from gym_env import PacmanEnv
+    
+    print(f"Cross-platform loading from {model_path}...")
+    
+    # First, inspect the saved weights to determine architecture
+    with zipfile.ZipFile(model_path, 'r') as z:
+        if 'policy.pth' not in z.namelist():
+            raise ValueError("No policy.pth found in model zip")
+        
+        with z.open('policy.pth') as f:
+            buffer = io.BytesIO(f.read())
+            policy_state = torch.load(buffer, map_location='cpu', weights_only=False)
+    
+    # Detect network architecture from saved weights
+    # Look at mlp_extractor.policy_net.0.weight shape to determine hidden size
+    if 'mlp_extractor.policy_net.0.weight' in policy_state:
+        hidden_size = policy_state['mlp_extractor.policy_net.0.weight'].shape[0]
+        print(f"Detected hidden layer size: {hidden_size}")
+    else:
+        hidden_size = 64  # Default
+        print(f"Using default hidden layer size: {hidden_size}")
+    
+    # Create a fresh model with the matching architecture
+    def make_env():
+        env = PacmanEnv(layout_name=layout_name)
+        env = ActionMasker(env, lambda e: e.action_masks())
+        return Monitor(env)
+    
+    dummy_env = DummyVecEnv([make_env])
+    model = MaskablePPO(
+        "MlpPolicy", 
+        dummy_env, 
+        device=device,
+        policy_kwargs={"net_arch": [hidden_size, hidden_size]}  # Match saved architecture
+    )
+    
+    # Load the policy weights
+    model.policy.load_state_dict(policy_state)
+    print(f"Loaded policy weights via cross-platform method")
+    
+    # Try to load optimizer state (optional, for continued training)
+    with zipfile.ZipFile(model_path, 'r') as z:
+        if 'policy.optimizer.pth' in z.namelist():
+            try:
+                with z.open('policy.optimizer.pth') as f:
+                    buffer = io.BytesIO(f.read())
+                    optim_state = torch.load(buffer, map_location=device, weights_only=False)
+                model.policy.optimizer.load_state_dict(optim_state)
+                print(f"Loaded optimizer state")
+            except Exception as e:
+                print(f"Warning: Could not load optimizer state ({e}), will use fresh optimizer")
+    
+    dummy_env.close()
+    print(f"Cross-platform load successful!")
+    return model
 
 
 # =============================================================================
