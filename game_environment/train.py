@@ -50,6 +50,7 @@ class Trainer:
         layout_name: str = 'mediumClassic',
         output_dir: str = None,
         device: str = 'auto',
+        create_dirs: bool = True,
     ):
         self.layout_name = layout_name
         self.device = device
@@ -59,15 +60,17 @@ class Trainer:
         self.num_ghosts = temp_env.num_ghosts
         temp_env.close()
         
-        # Setup output directory
+        # Setup output directory (only create if training)
         if output_dir is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_dir = f"training/{layout_name}_{timestamp}"
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        (self.output_dir / 'pacman').mkdir(exist_ok=True)
-        (self.output_dir / 'ghosts').mkdir(exist_ok=True)
-        (self.output_dir / 'logs').mkdir(exist_ok=True)
+        
+        if create_dirs:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            (self.output_dir / 'pacman').mkdir(exist_ok=True)
+            (self.output_dir / 'ghosts').mkdir(exist_ok=True)
+            (self.output_dir / 'logs').mkdir(exist_ok=True)
         
         # Models
         self.pacman_model = None
@@ -291,6 +294,7 @@ class Trainer:
         num_envs: int = 8,
         initial_trained_prob: float = 0.4,
         final_trained_prob: float = 0.9,
+        start_iteration: int = 1,
     ):
         """Run adversarial training with symmetric warmup and curriculum learning.
         
@@ -303,26 +307,42 @@ class Trainer:
         print(f"ADVERSARIAL TRAINING (Symmetric Warmup + Curriculum)")
         print(f"{'='*60}")
         print(f"Layout: {self.layout_name} ({self.num_ghosts} ghosts)")
-        print(f"Iterations: {iterations}")
-        print(f"Pac-Man warmup: {pacman_warmup_timesteps:,} | Ghost warmup: {ghost_warmup_timesteps:,}/ghost")
+        print(f"Iterations: {start_iteration} to {iterations}")
+        if start_iteration == 1:
+            print(f"Pac-Man warmup: {pacman_warmup_timesteps:,} | Ghost warmup: {ghost_warmup_timesteps:,}/ghost")
+        else:
+            print(f"Resuming from iteration {start_iteration} (skipping warmup)")
         print(f"Per-iter Pac-Man: {pacman_timesteps:,} | Per-iter Ghost: {ghost_timesteps:,}")
         print(f"Trained ghost prob: {initial_trained_prob:.0%} → {final_trained_prob:.0%}")
         print(f"Output: {self.output_dir}")
         print(f"{'='*60}\n")
         
-        # Phase 1a: Warmup Pac-Man vs random ghosts
-        if pacman_warmup_timesteps > 0:
+        # Save training config for resume capability
+        self.save_config({
+            'iterations': iterations,
+            'pacman_warmup_timesteps': pacman_warmup_timesteps,
+            'ghost_warmup_timesteps': ghost_warmup_timesteps,
+            'pacman_timesteps': pacman_timesteps,
+            'ghost_timesteps': ghost_timesteps,
+            'num_envs': num_envs,
+            'initial_trained_prob': initial_trained_prob,
+            'final_trained_prob': final_trained_prob,
+            'layout_name': self.layout_name,
+        })
+        
+        # Phase 1a: Warmup Pac-Man vs random ghosts (skip if resuming)
+        if start_iteration == 1 and pacman_warmup_timesteps > 0:
             print("\n*** PHASE 1a: PAC-MAN WARMUP (vs random ghosts) ***")
             self.train_pacman(pacman_warmup_timesteps, num_envs, ghost_type='random')
         
-        # Phase 1b: Warmup Ghosts vs random Pac-Man (SYMMETRIC!)
-        if ghost_warmup_timesteps > 0:
+        # Phase 1b: Warmup Ghosts vs random Pac-Man (skip if resuming)
+        if start_iteration == 1 and ghost_warmup_timesteps > 0:
             print("\n*** PHASE 1b: GHOST WARMUP (vs random Pac-Man) ***")
             for ghost_idx in range(1, self.num_ghosts + 1):
                 self.train_ghost(ghost_idx, ghost_warmup_timesteps, num_envs // 2 or 1, warmup_mode=True)
         
         # Phase 2: Adversarial iterations with curriculum learning
-        for iteration in range(1, iterations + 1):
+        for iteration in range(start_iteration, iterations + 1):
             # Compute annealed trained_policy_prob for this iteration
             if iterations > 1:
                 progress = (iteration - 1) / (iterations - 1)  # 0.0 to 1.0
@@ -363,6 +383,86 @@ class Trainer:
         for idx, model in self.ghost_models.items():
             model.save(str(self.output_dir / 'ghosts' / f'ghost_{idx}{suffix}'))
     
+    def save_config(self, config: dict):
+        """Save training configuration for resuming later."""
+        config_path = self.output_dir / 'training_config.json'
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        print(f"Saved training config to {config_path}")
+    
+    def load_config(self, training_dir: str) -> dict:
+        """Load training configuration from a previous run."""
+        config_path = Path(training_dir) / 'training_config.json'
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            print(f"Loaded training config from {config_path}")
+            return config
+        return {}
+    
+    def _load_pacman_cross_platform(self, model_path: Path) -> MaskablePPO:
+        """Load MaskablePPO model trained on different platform (e.g., Windows -> Linux).
+        
+        This extracts just the neural network weights and loads them into a fresh model,
+        avoiding pickle compatibility issues across Python versions/platforms.
+        """
+        import zipfile
+        import io
+        
+        print(f"Cross-platform loading from {model_path}...")
+        
+        # First, inspect the saved weights to determine architecture
+        with zipfile.ZipFile(model_path, 'r') as z:
+            if 'policy.pth' not in z.namelist():
+                raise ValueError("No policy.pth found in model zip")
+            
+            with z.open('policy.pth') as f:
+                buffer = io.BytesIO(f.read())
+                policy_state = torch.load(buffer, map_location='cpu', weights_only=False)
+        
+        # Detect network architecture from saved weights
+        # Look at mlp_extractor.policy_net.0.weight shape to determine hidden size
+        if 'mlp_extractor.policy_net.0.weight' in policy_state:
+            hidden_size = policy_state['mlp_extractor.policy_net.0.weight'].shape[0]
+            print(f"Detected hidden layer size: {hidden_size}")
+        else:
+            hidden_size = 64  # Default
+            print(f"Using default hidden layer size: {hidden_size}")
+        
+        # Create a fresh model with the matching architecture
+        def make_env():
+            env = PacmanEnv(layout_name=self.layout_name)
+            env = ActionMasker(env, lambda e: e.action_masks())
+            return Monitor(env)
+        
+        dummy_env = DummyVecEnv([make_env])
+        model = MaskablePPO(
+            "MlpPolicy", 
+            dummy_env, 
+            device=self.device,
+            policy_kwargs={"net_arch": [hidden_size, hidden_size]}  # Match saved architecture
+        )
+        
+        # Load the policy weights
+        model.policy.load_state_dict(policy_state)
+        print(f"Loaded policy weights via cross-platform method")
+        
+        # Try to load optimizer state (optional, for continued training)
+        with zipfile.ZipFile(model_path, 'r') as z:
+            if 'policy.optimizer.pth' in z.namelist():
+                try:
+                    with z.open('policy.optimizer.pth') as f:
+                        buffer = io.BytesIO(f.read())
+                        optim_state = torch.load(buffer, map_location=self.device, weights_only=False)
+                    model.policy.optimizer.load_state_dict(optim_state)
+                    print(f"Loaded optimizer state")
+                except Exception as e:
+                    print(f"Warning: Could not load optimizer state ({e}), will use fresh optimizer")
+        
+        dummy_env.close()
+        print(f"Cross-platform load successful!")
+        return model
+    
     def load(self, training_dir: str, iteration: int = None):
         """Load models from a training directory."""
         training_dir = Path(training_dir)
@@ -383,8 +483,14 @@ class Trainer:
             pacman_path = training_dir / 'pacman' / 'model.zip'
         
         if pacman_path.exists():
-            self.pacman_model = MaskablePPO.load(str(pacman_path), device=self.device)
-            print(f"Loaded Pac-Man: {pacman_path}")
+            # Try cross-platform method first (safer for Windows->Linux transfers)
+            # Then fall back to standard load if that fails
+            try:
+                self.pacman_model = self._load_pacman_cross_platform(pacman_path)
+            except Exception as e:
+                print(f"Cross-platform load failed ({e}), trying standard load...")
+                self.pacman_model = MaskablePPO.load(str(pacman_path), device=self.device)
+                print(f"Loaded Pac-Man: {pacman_path}")
             
             # Load VecNormalize
             norm_path = pacman_path.with_name(pacman_path.stem.replace('model', 'vecnormalize') + '.pkl')
@@ -394,8 +500,12 @@ class Trainer:
                     env = ActionMasker(env, lambda e: e.action_masks())
                     return Monitor(env)
                 dummy_env = DummyVecEnv([make_dummy])
-                self.pacman_vec_normalize = VecNormalize.load(str(norm_path), dummy_env)
-                print(f"Loaded VecNormalize")
+                try:
+                    self.pacman_vec_normalize = VecNormalize.load(str(norm_path), dummy_env)
+                    print(f"Loaded VecNormalize")
+                except Exception as e:
+                    print(f"Warning: Could not load VecNormalize ({e}), creating fresh")
+                    self.pacman_vec_normalize = VecNormalize(dummy_env)
         
         # Load Ghosts
         ghost_dir = training_dir / 'ghosts'
@@ -485,6 +595,10 @@ def main():
     
     # Adversarial training (symmetric warmup + curriculum learning)
     parser.add_argument('--iterations', type=int, default=5)
+    parser.add_argument('--resume', type=str, metavar='DIR',
+                       help='Resume training from a previous training directory')
+    parser.add_argument('--start-iteration', type=int, default=None,
+                       help='Starting iteration when resuming (auto-detected if not specified)')
     parser.add_argument('--pacman-warmup-timesteps', type=int, default=250000,
                        help='Pac-Man warmup timesteps vs random ghosts (0 to skip)')
     parser.add_argument('--ghost-warmup-timesteps', type=int, default=150000,
@@ -507,11 +621,15 @@ def main():
     
     args = parser.parse_args()
     
+    # Only create directories when training fresh (not eval/render/resume)
+    create_dirs = not (args.eval or args.render or args.resume)
+    
     # Create trainer
     trainer = Trainer(
         layout_name=args.layout,
-        output_dir=args.output_dir,
+        output_dir=args.resume or args.output_dir,  # Use resume dir if provided
         device=args.device,
+        create_dirs=create_dirs,
     )
     
     # Handle modes
@@ -538,15 +656,36 @@ def main():
         trainer.evaluate(episodes=50, vs_random=True, vs_trained=False)
     
     elif args.mode == 'adversarial':
+        # Handle resume
+        start_iteration = 1
+        saved_config = {}
+        if args.resume:
+            trainer.load(args.resume)
+            saved_config = trainer.load_config(args.resume)
+            
+            # Auto-detect start iteration
+            if args.start_iteration:
+                start_iteration = args.start_iteration
+            else:
+                # Find latest iteration
+                resume_dir = Path(args.resume)
+                pacman_files = list((resume_dir / 'pacman').glob('model_iter*.zip'))
+                if pacman_files:
+                    iterations_found = [int(f.stem.split('iter')[-1]) for f in pacman_files]
+                    start_iteration = max(iterations_found) + 1
+                    print(f"Auto-detected: resuming from iteration {start_iteration}")
+        
+        # Use saved config values as defaults, but allow command-line overrides
         trainer.train_adversarial(
-            iterations=args.iterations,
+            iterations=args.iterations if args.iterations != 5 else saved_config.get('iterations', args.iterations),
             pacman_warmup_timesteps=args.pacman_warmup_timesteps,
             ghost_warmup_timesteps=args.ghost_warmup_timesteps,
-            pacman_timesteps=args.pacman_timesteps,
-            ghost_timesteps=args.ghost_timesteps,
-            num_envs=args.num_envs,
-            initial_trained_prob=args.initial_trained_prob,
-            final_trained_prob=args.final_trained_prob,
+            pacman_timesteps=args.pacman_timesteps if args.pacman_timesteps != 200000 else saved_config.get('pacman_timesteps', args.pacman_timesteps),
+            ghost_timesteps=args.ghost_timesteps if args.ghost_timesteps != 150000 else saved_config.get('ghost_timesteps', args.ghost_timesteps),
+            num_envs=args.num_envs if args.num_envs != 8 else saved_config.get('num_envs', args.num_envs),
+            initial_trained_prob=args.initial_trained_prob if args.initial_trained_prob != 0.4 else saved_config.get('initial_trained_prob', args.initial_trained_prob),
+            final_trained_prob=args.final_trained_prob if args.final_trained_prob != 0.9 else saved_config.get('final_trained_prob', args.final_trained_prob),
+            start_iteration=start_iteration,
         )
     
     else:
