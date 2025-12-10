@@ -9,3 +9,6 @@ videos/
 ./game_environment/evaluation_comparison.png
 
 training_output/
+
+!project/models/
+!project/models/*.zip
