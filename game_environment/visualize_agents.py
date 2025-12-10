@@ -1,5 +1,6 @@
 """
 Visualize and Record trained Pac-Man vs Ghosts agents
+FIXED: Now supports VecNormalize!
 """
 
 import argparse
@@ -7,6 +8,7 @@ import os
 import time
 import numpy as np
 from stable_baselines3 import DQN
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 from gym_env import PacmanEnv
@@ -18,12 +20,13 @@ def visualize_game(
     ghost_model_dir,
     ghost_version,
     layout_name='mediumClassic',
-    num_ghosts=2,
+    num_ghosts=4,
     n_episodes=5,
     frame_delay=0.05,
     record_video=False,
     video_folder='videos',
-    video_fps=10
+    video_fps=10,
+    vecnorm_path=None  # NEW: VecNormalize path
 ):
     # Install dependencies if recording
     if record_video:
@@ -44,11 +47,30 @@ def visualize_game(
     print(f"Loading models...")
     print(f"{'='*60}")
     
-    # Load Pac-Man
-    pacman_model = MaskablePPO.load(pacman_model_path)
-    print(f"✓ Loaded Pac-Man: {pacman_model_path}")
+    # Auto-detect VecNormalize if not provided
+    if vecnorm_path is None:
+        model_dir = os.path.dirname(pacman_model_path)
+        candidate = os.path.join(model_dir, 'vecnormalize.pkl')
+        
+        # Check parent directory too (for best/ subdirectory)
+        if not os.path.exists(candidate):
+            parent_dir = os.path.dirname(model_dir)
+            parent_candidate = os.path.join(parent_dir, 'vecnormalize.pkl')
+            if os.path.exists(parent_candidate):
+                candidate = parent_candidate
+        
+        if os.path.exists(candidate):
+            vecnorm_path = candidate
+            print(f"✓ Auto-detected VecNormalize: {vecnorm_path}")
     
-    # Load ghosts
+    if vecnorm_path and os.path.exists(vecnorm_path):
+        print(f"✓ Using VecNormalize: {vecnorm_path}")
+        has_vecnorm = True
+    else:
+        print(f"⚠ No VecNormalize found (model may perform poorly!)")
+        has_vecnorm = False
+    
+    # Load ghosts first
     ghost_models = {}
     for i in range(1, num_ghosts + 1):
         ghost_path = os.path.join(ghost_model_dir, f"ghost_{i}_v{ghost_version}")
@@ -84,16 +106,28 @@ def visualize_game(
     
     for episode in range(n_episodes):
         # Create environment with rendering
-        env = PacmanEnv(
+        base_env = PacmanEnv(
             layout_name=layout_name,
             ghost_policies=ghost_models,
             max_steps=500,
             render_mode='human',
         )
         # Wrap with ActionMasker for MaskablePPO
-        env = ActionMasker(env, lambda e: e.action_masks())
+        env = ActionMasker(base_env, lambda e: e.action_masks())
         
-        obs, _ = env.reset()
+        # Wrap in DummyVecEnv for VecNormalize compatibility
+        env = DummyVecEnv([lambda: env])
+        
+        # Apply VecNormalize if available (CRITICAL FIX!)
+        if has_vecnorm:
+            env = VecNormalize.load(vecnorm_path, env)
+            env.training = False  # Don't update stats during visualization
+            env.norm_reward = False  # Don't normalize rewards
+        
+        # Load Pac-Man model with the env
+        pacman_model = MaskablePPO.load(pacman_model_path, env=env)
+        
+        obs = env.reset()
         done = False
         steps = 0
         episode_reward = 0
@@ -137,21 +171,27 @@ def visualize_game(
                 except Exception as e:
                     print(f"  Frame capture error: {e}")
             
-            # Pac-Man action with action masking
+            # Get action masks from vectorized env
+            action_masks = env.env_method('action_masks')[0]
+            
+            # Pac-Man action with action masking (now with normalized obs!)
             action, _ = pacman_model.predict(
                 obs,
                 deterministic=True,
-                action_masks=env.action_masks()
+                action_masks=action_masks
             )
+            
             # Convert to int
             if hasattr(action, 'item'):
                 action = int(action.item())
+            elif isinstance(action, np.ndarray):
+                action = int(action[0])
             
-            obs, reward, terminated, truncated, info = env.step(action)
+            obs, reward, done_vec, info = env.step([action])
             
-            episode_reward += reward
+            episode_reward += reward[0]
             steps += 1
-            done = terminated or truncated
+            done = done_vec[0]
             
             # Frame timing
             if not record_video:
@@ -182,6 +222,9 @@ def visualize_game(
                 print(f"  ✓ Saved video: {video_filename} ({len(frames)} frames)")
             except Exception as e:
                 print(f"  ✗ Failed to save video: {e}")
+        
+        # Extract info from vectorized wrapper
+        info = info[0]
         
         # Episode summary
         if info.get('win', False):
@@ -230,8 +273,8 @@ def visualize_game(
         stats_path = os.path.join(video_folder, f"stats_v{ghost_version}.json")
         with open(stats_path, 'w') as f:
             json.dump(all_stats, f, indent=2)
-        print(f"\n✓ Statistics saved to: {stats_path}")
-        print(f"✓ Videos saved to: {video_folder}")
+        print(f"\nStatistics saved to: {stats_path}")
+        print(f"Videos saved to: {video_folder}")
     
     print("\n✓ Visualization complete!")
     
@@ -241,11 +284,16 @@ def visualize_game(
 def main():
     parser = argparse.ArgumentParser(description='Visualize trained Pac-Man vs Ghosts')
     
-    parser.add_argument('--pacman-path', type=str, required=True)
-    parser.add_argument('--ghost-dir', type=str, required=True)
-    parser.add_argument('--ghost-version', type=int, required=True)
+    parser.add_argument('--pacman-path', type=str, required=True,
+                       help='Path to Pac-Man model (.zip file)')
+    parser.add_argument('--ghost-dir', type=str, required=True,
+                       help='Directory containing ghost models')
+    parser.add_argument('--ghost-version', type=int, required=True,
+                       help='Ghost version to load (e.g., 10 for v10)')
+    parser.add_argument('--vecnorm-path', type=str, default=None,
+                       help='Path to vecnormalize.pkl (auto-detects if not provided)')
     parser.add_argument('--layout', type=str, default='mediumClassic')
-    parser.add_argument('--num-ghosts', type=int, default=2)
+    parser.add_argument('--num-ghosts', type=int, default=4)
     parser.add_argument('--episodes', type=int, default=5)
     parser.add_argument('--frame-delay', type=float, default=0.05)
     parser.add_argument('--record', action='store_true', help='Record videos of gameplay')
@@ -264,7 +312,8 @@ def main():
         frame_delay=args.frame_delay,
         record_video=args.record,
         video_folder=args.video_folder,
-        video_fps=args.video_fps
+        video_fps=args.video_fps,
+        vecnorm_path=args.vecnorm_path  # NEW parameter
     )
 
 
