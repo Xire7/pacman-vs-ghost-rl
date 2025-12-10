@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MaskablePPO training script for Pac-Man."""
+"""MaskablePPO training script for Pac-Man"""
 
 import argparse
 import os
@@ -23,16 +23,7 @@ from gym_env import make_masked_pacman_env
 
 
 def linear_schedule(initial_value: float, final_value: float = 1e-5) -> Callable[[float], float]:
-    """
-    Linear learning rate schedule.
-    
-    Args:
-        initial_value: Initial learning rate
-        final_value: Final learning rate (default 1e-5)
-    
-    Returns:
-        Schedule function that takes progress (1.0 -> 0.0) and returns LR
-    """
+    """Linear learning rate schedule."""
     def schedule(progress_remaining: float) -> float:
         return final_value + progress_remaining * (initial_value - final_value)
     return schedule
@@ -88,17 +79,7 @@ class NormalizeSyncCallback(BaseCallback):
         return True
 
 def create_env(layout_name, ghost_type, num_envs, max_steps, normalize=False, norm_stats_path=None, training=True):
-    """Create vectorized training environment.
-    
-    Args:
-        layout_name: Layout to use
-        ghost_type: Type of ghost agent
-        num_envs: Number of parallel environments
-        max_steps: Max steps per episode
-        normalize: Whether to use VecNormalize
-        norm_stats_path: Path to load normalization stats from (for eval/resume)
-        training: Whether this is for training (updates running stats) or eval (frozen stats)
-    """
+    """Create vectorized training environment."""
     def make_env():
         return make_masked_pacman_env(layout_name, ghost_type, max_steps=max_steps)
     
@@ -139,8 +120,7 @@ def train(args):
     print(f"Training PPO on {args.layout}")
     print(f"Timesteps: {args.timesteps:,} | Envs: {args.num_envs}")
     print(f"Device: {device} | Normalize: {args.normalize}")
-    print(f"n_steps: {args.n_steps} | batch_size: {args.batch_size} | clip_range: {args.clip_range}")
-    print(f"n_epochs: {args.n_epochs} | gamma: {args.gamma} | target_kl: {args.target_kl}")
+    print(f"TensorBoard log: {log_dir}")  # Show where logs go
     print(f"{'='*60}\n")
     
     env = create_env(args.layout, args.ghost_type, args.num_envs, args.max_steps, 
@@ -159,13 +139,25 @@ def train(args):
     policy_kwargs = {
         'net_arch': dict(pi=args.net_arch, vf=args.net_arch),
         'activation_fn': torch.nn.Tanh,
-        'ortho_init': True,  # Orthogonal initialization (recommended by research)
+        'ortho_init': True,
     }
     
     if args.resume:
         print(f"Loading model from {args.resume}")
-        model = MaskablePPO.load(args.resume, env=env, tensorboard_log=log_dir, device=device)
-        print(f"Network: {model.policy.net_arch}")
+        # FIX 1: Load model without tensorboard_log to prevent timestep continuation
+        model = MaskablePPO.load(args.resume, env=env, device=device)
+        
+        # FIX 2: Reset timestep counter for clean TensorBoard logging
+        model.num_timesteps = 0
+        model._num_timesteps_at_start = 0
+        
+        # FIX 3: Set NEW tensorboard directory for this training session
+        model.tensorboard_log = log_dir
+        
+        print(f"✓ Reset timestep counter to 0")
+        print(f"✓ New TensorBoard directory: {log_dir}")
+        
+        # Update hyperparameters
         if args.lr_decay:
             lr_schedule = linear_schedule(args.lr, args.lr_final)
             model.learning_rate = lr_schedule
@@ -195,9 +187,9 @@ def train(args):
             ent_coef=args.ent_coef,
             vf_coef=args.vf_coef,
             max_grad_norm=0.5,
-            target_kl=args.target_kl,  # Early stopping on KL divergence
+            target_kl=args.target_kl,
             policy_kwargs=policy_kwargs,
-            tensorboard_log=log_dir,
+            tensorboard_log=log_dir,  # Clean start with unique directory
             verbose=1,
             device=device,
         )
@@ -227,6 +219,8 @@ def train(args):
         print(f"VecNormalize stats saved to {model_dir}/vecnormalize.pkl")
     
     print(f"\nModel saved to {model_dir}")
+    print(f"TensorBoard logs saved to {log_dir}")
+    print(f"\nView with: tensorboard --logdir={log_dir}")
     
     env.close()
     eval_env.close()
@@ -237,11 +231,9 @@ def evaluate(args):
     print(f"\nEvaluating {args.model_path} on {args.layout}")
     print(f"Episodes: {args.episodes}\n")
     
-    # Check in same directory first
     model_dir = os.path.dirname(args.model_path)
     vecnorm_path = os.path.join(model_dir, 'vecnormalize.pkl')
     
-    # If not found and we're in a subdirectory (like "best/"), check parent
     if not os.path.exists(vecnorm_path):
         parent_dir = os.path.dirname(model_dir)
         parent_vecnorm = os.path.join(parent_dir, 'vecnormalize.pkl')
@@ -257,20 +249,17 @@ def evaluate(args):
     
     render_mode = 'human' if args.render else None
     
-    # Create environment (single env, not vectorized for eval with render)
     env = make_masked_pacman_env(args.layout, args.ghost_type, 
                                  max_steps=args.max_steps, render_mode=render_mode)
     
     env = DummyVecEnv([lambda: env])
     
-    # Load VecNormalize if available
     if has_vecnorm:
         env = VecNormalize.load(vecnorm_path, env)
         env.training = False
         env.norm_reward = False
         print("✓ VecNormalize loaded\n")
     
-    # Load model
     model = MaskablePPO.load(args.model_path, env=env)
     
     wins, total_reward = 0, []
@@ -281,7 +270,6 @@ def evaluate(args):
         ep_reward = 0
         
         while not done:
-            # Get action masks from vectorized env
             action_masks = env.env_method('action_masks')[0]
             action, _ = model.predict(obs, deterministic=True, action_masks=action_masks)
             
@@ -296,7 +284,6 @@ def evaluate(args):
             if args.render:
                 time.sleep(0.05)
         
-        # Extract info from vectorized wrapper
         info = info[0]
         
         if info.get('win'):
@@ -321,30 +308,32 @@ def main():
     parser.add_argument('--ghost-type', default='random', choices=['random', 'directional'])
     parser.add_argument('--max-steps', type=int, default=500)
     parser.add_argument('--timesteps', type=int, default=500000)
-    parser.add_argument('--num-envs', type=int, default=8)
+    parser.add_argument('--num-envs', type=int, default=16)
     
     # Learning rate settings
     parser.add_argument('--lr-decay', action='store_true', help='Enable linear LR decay')
     parser.add_argument('--lr', type=float, default=2.5e-4, help='Initial learning rate')
     parser.add_argument('--lr-final', type=float, default=1e-5, help='Final LR when using decay')
     
-    # PPO hyperparameters (research-backed defaults for stability)
-    parser.add_argument('--n-steps', type=int, default=512, help='Steps per env per update (smaller = faster updates)')
-    parser.add_argument('--batch-size', type=int, default=64, help='Minibatch size (n_steps*n_envs should be divisible)')
+    # PPO hyperparameters
+    parser.add_argument('--n-steps', type=int, default=512, help='Steps per env per update')
+    parser.add_argument('--batch-size', type=int, default=128, help='Minibatch size')
     parser.add_argument('--n-epochs', type=int, default=10, help='Number of PPO epochs per update')
     parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor')
     parser.add_argument('--gae-lambda', type=float, default=0.95, help='GAE lambda')
-    parser.add_argument('--clip-range', type=float, default=0.1, help='PPO clip range (0.1-0.2 recommended)')
-    parser.add_argument('--ent-coef', type=float, default=0.01, help='Entropy coefficient (lower=less exploration)')
+    parser.add_argument('--clip-range', type=float, default=0.1, help='PPO clip range')
+    parser.add_argument('--ent-coef', type=float, default=0.01, help='Entropy coefficient')
     parser.add_argument('--vf-coef', type=float, default=0.5, help='Value function coefficient')
-    parser.add_argument('--target-kl', type=float, default=0.02, help='Target KL divergence for early stopping')
+    parser.add_argument('--target-kl', type=float, default=0.02, help='Target KL divergence')
     
     # Network architecture
-    parser.add_argument('--net-arch', type=int, nargs='+', default=[256, 256], help='Network architecture (e.g., --net-arch 256 256)')
+    parser.add_argument('--net-arch', type=int, nargs='+', default=[256, 256], 
+                       help='Network architecture')
     
     # Other settings
-    parser.add_argument('--normalize', action='store_true', help='Use VecNormalize for obs/reward normalization')
-    parser.add_argument('--cpu', action='store_true', help='Force CPU training (faster for small networks)')
+    parser.add_argument('--normalize', action='store_true', 
+                       help='Use VecNormalize for obs/reward normalization')
+    parser.add_argument('--cpu', action='store_true', help='Force CPU training')
     parser.add_argument('--resume', type=str, help='Resume from model path')
     parser.add_argument('--log-dir', default='./logs')
     parser.add_argument('--model-dir', default='./models')

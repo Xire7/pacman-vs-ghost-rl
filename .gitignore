@@ -6,5 +6,6 @@ models/
 .github/
 *.zip
 videos/
+./game_environment/evaluation_comparison.png
 
 training_output/

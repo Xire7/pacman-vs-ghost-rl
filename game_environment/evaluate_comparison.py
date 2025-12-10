@@ -250,7 +250,7 @@ def plot_moving_average_comparison(stats_trained, stats_random, window=10, save_
     # Styling
     plt.xlabel('Episode', fontsize=13, fontweight='bold')
     plt.ylabel('Win Rate (%)', fontsize=13, fontweight='bold')
-    plt.title('PPO Pac-Man Performance: Trained vs Random Ghosts\nMediumClassic Layout', 
+    plt.title(f"PPO Pac-Man Performance: Trained vs Random Ghosts", 
               fontsize=15, fontweight='bold', pad=20)
     plt.legend(loc='best', fontsize=11, framealpha=0.9)
     plt.grid(True, alpha=0.3, linestyle='--')
