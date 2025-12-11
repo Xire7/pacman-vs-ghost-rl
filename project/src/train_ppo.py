@@ -154,8 +154,8 @@ def train(args):
         # FIX 3: Set NEW tensorboard directory for this training session
         model.tensorboard_log = log_dir
         
-        print(f"✓ Reset timestep counter to 0")
-        print(f"✓ New TensorBoard directory: {log_dir}")
+        print(f"Reset timestep counter to 0")
+        print(f"New TensorBoard directory: {log_dir}")
         
         # Update hyperparameters
         if args.lr_decay:
@@ -258,7 +258,7 @@ def evaluate(args):
         env = VecNormalize.load(vecnorm_path, env)
         env.training = False
         env.norm_reward = False
-        print("✓ VecNormalize loaded\n")
+        print("VecNormalize loaded\n")
     
     model = MaskablePPO.load(args.model_path, env=env)
     

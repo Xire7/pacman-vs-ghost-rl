@@ -353,7 +353,7 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
     
     # Save the curriculum-trained model
     model.save(os.path.join(dirs['models'], f"ghost_{ghost_idx}_v0"))
-    print(f"✓ Ghost {ghost_idx} curriculum training complete (saved as v0)")
+    print(f" Ghost {ghost_idx} curriculum training complete (saved as v0)")
     print(f"  Total timesteps: {total_timesteps:,}")
     print(f"  Final exploration rate: {model.exploration_rate:.3f}")
     print(f"{'='*60}\n")
