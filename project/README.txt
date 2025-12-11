@@ -69,14 +69,14 @@ Key Contributions:
 TRAINING PIPELINE:
 -----------------
 Step 1: python src/train_ppo.py --timesteps 2000000 --num-envs 16 --normalize --lr-decay
-Step 2: python src/train_mixed.py --pacman [baseline] --rounds 7 --ghost-pretrain-steps 150000
+Step 2: python src/train_mixed.py --pacman [baseline] --rounds 7 --ghost-pretrain-steps 200000
 Step 3: python src/evaluate_comparison.py --version 7 --episodes 100 --plot
 
 CURRICULUM LEARNING STAGES (Ghost Pretraining):
 -----------------------------------------------
-Stage 1 (30% - 45k steps):  Random Pac-Man   → Learn basic movement
-Stage 2 (50% - 75k steps):  Fleeing Pac-Man  → Learn pursuit & chase strategies
-Stage 3 (20% - 30k steps):  Smart Pac-Man    → Adapt to trained opponent
+Stage 1 (30% - 60k steps):  Random Pac-Man   → Learn basic movement
+Stage 2 (50% - 100k steps):  Fleeing Pac-Man  → Learn pursuit & chase strategies
+Stage 3 (20% - 40k steps):  Smart Pac-Man    → Adapt to trained opponent
 
 RESULTS:
 ----------
