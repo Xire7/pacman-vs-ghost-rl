@@ -36,7 +36,7 @@ class FleeingPacmanPolicy:
         Compatible with stable-baselines3 API.
         Returns action and dummy state.
         """
-        return 0, None  # Dummy return
+        return 0, None  # dummy return
     
     def get_action(self, game_state):
         """
@@ -46,43 +46,37 @@ class FleeingPacmanPolicy:
         legal = game_state.getLegalPacmanActions()
         pacman_pos = game_state.getPacmanPosition()
         
-        # Find nearest dangerous ghost
+        # find nearest dangerous ghost
         min_dist = float('inf')
         nearest_ghost_pos = None
         for ghost_state in game_state.getGhostStates():
-            if ghost_state.scaredTimer == 0:  # Only flee from dangerous ghosts
+            if ghost_state.scaredTimer == 0:  # only flee from dangerous ghosts
                 ghost_pos = ghost_state.getPosition()
                 dist = manhattanDistance(pacman_pos, ghost_pos)
                 if dist < min_dist:
                     min_dist = dist
                     nearest_ghost_pos = ghost_pos
         
-        if nearest_ghost_pos and min_dist < 10:  # Only flee if ghost is close
-            # Calculate direction away from ghost
+        if nearest_ghost_pos and min_dist < 10:  # only flee if ghost is close
+            # calculate direction away from ghost
             dx = pacman_pos[0] - nearest_ghost_pos[0]
             dy = pacman_pos[1] - nearest_ghost_pos[1]
             
-            # Choose direction based on which axis has larger difference
+            # choose direction based on which axis has larger difference
             if abs(dy) > abs(dx):
-                # Prioritize vertical movement
                 preferred = Directions.NORTH if dy > 0 else Directions.SOUTH
                 secondary = Directions.EAST if dx > 0 else Directions.WEST
             else:
-                # Prioritize horizontal movement
                 preferred = Directions.EAST if dx > 0 else Directions.WEST
                 secondary = Directions.NORTH if dy > 0 else Directions.SOUTH
             
-            # Try preferred direction first
             if preferred in legal and preferred != Directions.STOP:
                 return preferred
-            # Try secondary direction
             if secondary in legal and secondary != Directions.STOP:
                 return secondary
         
-        # If no ghost nearby or can't flee, move toward food
         food_list = game_state.getFood().asList()
         if food_list:
-            # Find nearest food
             min_food_dist = float('inf')
             nearest_food = None
             for food_pos in food_list:
@@ -103,7 +97,6 @@ class FleeingPacmanPolicy:
                 if preferred in legal and preferred != Directions.STOP:
                     return preferred
         
-        # Fallback: random legal action (avoid STOP if possible)
         non_stop_actions = [a for a in legal if a != Directions.STOP]
         if non_stop_actions:
             return np.random.choice(non_stop_actions)
@@ -182,19 +175,15 @@ def evaluate(model, layout, ghost_models=None, n=50, vecnorm_stats=None):
     wins = 0
     
     for _ in range(n):
-        # Create environment
         if ghost_models:
             env = PacmanEnv(layout_name=layout, ghost_policies=ghost_models, max_steps=500)
         else:
             env = PacmanEnv(layout_name=layout, ghost_type='random', max_steps=500)
         
-        # Wrap with ActionMasker
         env = ActionMasker(env, lambda e: e.action_masks())
         
-        # Wrap in DummyVecEnv for VecNormalize compatibility
         env = DummyVecEnv([lambda: env])
         
-        # Apply VecNormalize if available
         if vecnorm_stats:
             env = VecNormalize.load(vecnorm_stats, env)
             env.training = False
@@ -269,7 +258,7 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
         max_steps=500
     )
     
-    # Initialize DQN with good hyperparameters for curriculum learning
+    # initialize DQN with good hyperparameters for curriculum learning
     policy_kwargs = dict(
         net_arch=[256, 128, 64],
     )
@@ -277,12 +266,12 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
     model = DQN(
         "MlpPolicy", env1,
         learning_rate=5e-4,
-        buffer_size=200000,         # Large buffer for diverse experiences
-        learning_starts=10000,      # More initial exploration
-        batch_size=256,             # Larger batches for stability
+        buffer_size=200000,         # large buffer for diverse experiences
+        learning_starts=10000,      # more initial exploration
+        batch_size=256,             # larger batches for stability
         gamma=0.99,
         target_update_interval=2000,
-        exploration_fraction=0.5,   # Explore for 50% of stage 1
+        exploration_fraction=0.5,   # explore for 50% of stage 1
         exploration_final_eps=0.10,
         train_freq=4,
         gradient_steps=1,
@@ -293,7 +282,7 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
     
     print(f"  Training for {stage1_steps:,} steps...")
     model.learn(total_timesteps=stage1_steps, progress_bar=True, reset_num_timesteps=True)
-    print(f"  ✓ Stage 1 complete\n")
+    print(f"  Stage 1 complete\n")
     
     env1.close()
     
@@ -319,7 +308,7 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
     print(f"  Training for {stage2_steps:,} steps...")
     print(f"  (Learning rate reduced to 3e-4 for stability)")
     model.learn(total_timesteps=stage2_steps, progress_bar=True, reset_num_timesteps=False)
-    print(f"  ✓ Stage 2 complete\n")
+    print(f"  Stage 2 complete\n")
     
     env2.close()
     
@@ -348,17 +337,17 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
         vecnorm_path=vecnorm_stats
     )
     
-    # Transfer to new environment
+    # transfer to new environment
     model.set_env(env3)
     
-    # Further reduce learning rate for adaptation
+    # further reduce learning rate for adaptation
     model.learning_rate = 1e-4
-    model.exploration_rate = 0.05  # Minimal exploration, mostly exploitation
+    model.exploration_rate = 0.05  # minimal exploration, mostly exploitation
     
     print(f"  Training for {stage3_steps:,} steps...")
     print(f"  (Learning rate reduced to 1e-4 for fine-tuning)")
     model.learn(total_timesteps=stage3_steps, progress_bar=True, reset_num_timesteps=False)
-    print(f"  ✓ Stage 3 complete\n")
+    print(f"  Stage 3 complete\n")
     
     env3.close()
     
@@ -464,20 +453,20 @@ def train_pacman(pacman_path, layout, dirs, ghost_models, timesteps, version, n_
             return ActionMasker(env, lambda e: e.action_masks())
         return _init
 
-    # Gradual shift: more random early, more trained later
+    # gradual shift: more random early, more trained later
     random_ratio = max(0.5, 0.9 - 0.05 * (version - 1))
     random_steps = int(timesteps * random_ratio)
     trained_steps = timesteps - random_steps
     
     log_dir = os.path.join(dirs['logs'], f"pacman_v{version}")
     
-    # Phase 1: Train on random ghosts
+    # phase 1: Train on random ghosts
     print(f"    Phase 1: {random_steps:,} steps vs random ghosts ({random_ratio*100:.0f}%)")
     print(f"    TensorBoard: {log_dir}")
     env_rand = DummyVecEnv([make_random_env() for _ in range(n_envs)])
     env_rand = VecMonitor(env_rand)
     
-    # Apply VecNormalize
+    # apply VecNormalize
     if vecnorm_stats and os.path.exists(vecnorm_stats):
         print(f"    Loading VecNormalize stats from: {vecnorm_stats}")
         env_rand = VecNormalize.load(vecnorm_stats, env_rand)
@@ -488,7 +477,7 @@ def train_pacman(pacman_path, layout, dirs, ghost_models, timesteps, version, n_
         env_rand = VecNormalize(env_rand, norm_obs=True, norm_reward=True, 
                                 clip_obs=10.0, clip_reward=10.0)
     
-    # Load model
+    # load model
     model = MaskablePPO.load(pacman_path, env=env_rand)
     
     model.num_timesteps = 0
@@ -499,14 +488,14 @@ def train_pacman(pacman_path, layout, dirs, ghost_models, timesteps, version, n_
     model.clip_range = lambda _: 0.1
     model.learn(total_timesteps=random_steps, progress_bar=True)
     
-    # Save updated VecNormalize stats
+    # save updated VecNormalize stats
     vecnorm_save_path = os.path.join(dirs['models'], 'vecnormalize.pkl')
     env_rand.save(vecnorm_save_path)
     print(f"    Saved VecNormalize to: {vecnorm_save_path}")
     
     env_rand.close()
     
-    # Phase 2: Train on trained ghosts
+    # phase 2: Train on trained ghosts
     print(f"    Phase 2: {trained_steps:,} steps vs trained ghosts ({(1-random_ratio)*100:.0f}%)")
     env_trained = DummyVecEnv([make_trained_env() for _ in range(n_envs)])
     env_trained = VecMonitor(env_trained)
@@ -572,10 +561,10 @@ def main():
     run_dir, dirs = create_dirs()
     print(f"Output: {run_dir}\n")
     
-    # Load pretrained Pac-Man with VecNormalize
+    # load pretrained Pac-Man with VecNormalize
     pacman_path, vecnorm_stats = load_pretrained_pacman(args.pacman)
     
-    # Create a temporary env to load the model
+    # create a temporary env to load the model
     temp_env = DummyVecEnv([lambda: ActionMasker(
         PacmanEnv(layout_name=args.layout, ghost_type='random', max_steps=500),
         lambda e: e.action_masks()
@@ -589,11 +578,11 @@ def main():
     pacman_model = MaskablePPO.load(pacman_path, env=temp_env)
     temp_env.close()
     
-    # Baseline evaluation
+    # baseline evaluation
     baseline = evaluate(pacman_model, args.layout, vecnorm_stats=vecnorm_stats)
     print(f"Baseline Pac-Man vs random ghosts: {baseline*100:.1f}%")
     
-    # Save as v0
+    # save as v0
     pacman_model.save(os.path.join(dirs['models'], "pacman_v0"))
     if vecnorm_stats:
         import shutil
@@ -602,7 +591,7 @@ def main():
         vecnorm_stats = vecnorm_dest
         print(f"Copied VecNormalize to: {vecnorm_dest}")
     
-    # Get ghost count
+    # get ghost count
     temp_env = PacmanEnv(layout_name=args.layout)
     num_ghosts = temp_env.num_ghosts
     temp_env.close()
@@ -632,10 +621,10 @@ def main():
             )
         
         print(f"\n{'='*60}")
-        print(f"✓ ALL GHOSTS CURRICULUM TRAINED (v0)")
+        print(f"ALL GHOSTS CURRICULUM TRAINED (v0)")
         print(f"{'='*60}")
         
-        # Evaluate curriculum-trained ghosts
+        # evaluate curriculum-trained ghosts
         print(f"\nCheckpoint: Testing curriculum-trained ghosts vs trained Pac-Man")
         print(f"{'─'*60}")
         wr_baseline = evaluate(pacman_model, args.layout, None, n=30, vecnorm_stats=vecnorm_stats)
@@ -646,16 +635,16 @@ def main():
         
         if wr_after_pretrain < wr_baseline:
             improvement = ((wr_baseline - wr_after_pretrain) / wr_baseline) * 100
-            print(f"\n✓ Curriculum training successful!")
+            print(f"\n Curriculum training successful!")
             print(f"  Ghosts are {improvement:.1f}% more challenging than random")
             print(f"  Ghosts learned: movement → pursuit → adaptation")
         else:
-            print(f"\n⚠ Ghosts not yet better than random")
+            print(f"\n Ghosts not yet better than random")
             print(f"  Consider increasing --ghost-pretrain-steps")
         
         print(f"\nReady for adversarial training!\n")
     else:
-        print(f"\n⚠ SKIPPED ghost curriculum pretraining")
+        print(f"\n SKIPPED ghost curriculum pretraining")
         print(f"Ghosts will start from scratch (not recommended)\n")
     
     # ========== ADVERSARIAL TRAINING LOOP ==========
@@ -701,11 +690,11 @@ def main():
         print(f"  vs trained ghosts: {wr_trained*100:.1f}%")
         
         if wr_random < 0.70:
-            print(f"\n⚠ WARNING: Pac-Man struggling vs random ghosts!")
+            print(f"\n WARNING: Pac-Man struggling vs random ghosts!")
             print(f"  May need to increase random ghost training ratio")
         
         if round_num > 1 and wr_trained > 0.85:
-            print(f"\n⚠ Pac-Man dominating - ghosts may need more training")
+            print(f"\n Pac-Man dominating - ghosts may need more training")
     
     # ========== FINAL EVALUATION ==========
     print(f"\n\n{'='*60}")
@@ -729,8 +718,8 @@ def main():
     
     # Save best model
     pacman_model.save(os.path.join(dirs['models'], "pacman_best"))
-    print(f"\n✓ Saved best Pac-Man: {dirs['models']}/pacman_best.zip")
-    print(f"✓ VecNormalize stats: {vecnorm_stats}")
+    print(f"\n Saved best Pac-Man: {dirs['models']}/pacman_best.zip")
+    print(f" VecNormalize stats: {vecnorm_stats}")
     
     print(f"\n{'='*60}")
     print(f"TRAINING COMPLETE!")
