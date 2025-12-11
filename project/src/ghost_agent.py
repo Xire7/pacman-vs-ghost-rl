@@ -231,52 +231,76 @@ class IndependentGhostEnv(gym.Env):
     
     def _calculate_individual_ghost_reward(self):
         """
-        Reward for THIS ghost specifically.
-        
-        Encourages individual contribution while maintaining team goal.
+        AGGRESSIVE chase-focused reward.
+        Goal: Make ghosts HUNT Pac-Man relentlessly.
         """
         reward = 0.0
         
-        # Team rewards (all ghosts get these)
+        # terminal rewards (keep strong)
         if self.game_state.isLose():
-            reward += 100.0  # Caught Pac-Man!
+            reward += 200.0  # 2x - catching Pac-Man is the goal!
             return reward
         elif self.game_state.isWin():
-            reward -= 50.0   # Pac-Man won
+            reward -= 100.0  # 2x penalty - failed to catch
             return reward
         
-        # Individual reward: proximity to Pac-Man
         pacman_pos = self.game_state.getPacmanPosition()
         ghost_pos = self.game_state.getGhostPosition(self.ghost_index)
         ghost_state = self.game_state.getGhostState(self.ghost_index)
-        
         dist = manhattanDistance(pacman_pos, ghost_pos)
         
-        # Reward for being close (if not scared)
         if ghost_state.scaredTimer == 0:
-            reward += 5.0 / (dist + 1)
-
-            if hasattr(self, 'prev_dist_to_pacman'):
-                if dist < self.prev_dist_to_pacman:
-                    reward += (self.prev_dist_to_pacman - dist) * 2.0  # Changed from 0.5
+            # Exponential reward for being close - makes proximity CRITICAL
+            if dist <= 1:
+                reward += 50.0  # right next to Pac-Man - HUGE reward!
+            elif dist <= 2:
+                reward += 25.0  # very close
+            elif dist <= 3:
+                reward += 12.0  # close
+            elif dist <= 5:
+                reward += 5.0   # nearby
+            else:
+                reward += 10.0 / (dist + 1)  # diminishing returns for being far
             
-            if dist <= 2:  # Very close to Pac-Man
-                reward += 10.0  # Large bonus for applying pressure
-            elif dist <= 1:  # Close to Pac-Man
-                reward += 20.0  # Big bonus
+            # reward for getting closer - this is the KEY behavior we want
+            if hasattr(self, 'prev_dist_to_pacman'):
+                dist_improvement = self.prev_dist_to_pacman - dist
+                if dist_improvement > 0:
+                    #  reward for closing distance
+                    reward += dist_improvement * 10.0  # was 2.0, now 10.0
+                elif dist_improvement < 0:
+                    # penalty for moving away
+                    reward -= abs(dist_improvement) * 5.0  # Punish retreat!
+            
+            # reward for moving in Pac-Man's direction
+            if hasattr(self, 'prev_ghost_pos'):
+                # Vector from old position to new position
+                move_dx = ghost_pos[0] - self.prev_ghost_pos[0]
+                move_dy = ghost_pos[1] - self.prev_ghost_pos[1]
+                
+                #vVector from ghost to Pac-Man
+                target_dx = pacman_pos[0] - ghost_pos[0]
+                target_dy = pacman_pos[1] - ghost_pos[1]
+                
+                # dot product (measures alignment)
+                if abs(target_dx) + abs(target_dy) > 0:
+                    alignment = (move_dx * target_dx + move_dy * target_dy) / (abs(target_dx) + abs(target_dy))
+                    reward += alignment * 3.0  # Reward moving toward Pac-Man
+            
+            self.prev_ghost_pos = ghost_pos
+            
         else:
-            # If scared, reward for staying away
-            reward += dist * 0.3  # Reward for staying far away
-
-        # Reward for improving position (closing distance)
-        if hasattr(self, 'prev_dist_to_pacman'):
-            dist_improvement = self.prev_dist_to_pacman - dist
-            if dist_improvement > 0:
-                reward += dist_improvement * 0.5  # Reward closing distance
+            # scared: flee!
+            reward += dist * 1.0  # stronger flee reward
+            
+            # penalty for being caught while scared
+            if dist <= 2:
+                reward -= 20.0
+        
         self.prev_dist_to_pacman = dist
         
-        # Small step penalty to encourage efficiency
-        reward -= 0.01
+        # reduce step penalty - don't discourage long chases
+        reward -= 0.001  # was 0.01, much smaller now
         
         return reward
     
