@@ -281,8 +281,7 @@ class PacmanEnv(gym.Env):
         # ============== FOOD REWARDS (smaller scale) ==============
         food_eaten = self.prev_food_count - self.game_state.getNumFood()
         if food_eaten > 0:
-            # Modest reward per food (total ~100-150 for all food vs 50-60 for winning)
-            # This ensures winning bonus > food rewards, but food still matters
+            # Reward per food eaten
             reward += food_eaten * 1.0
             
             # Progressive bonus: reward increases as more food is eaten
@@ -360,14 +359,12 @@ class PacmanEnv(gym.Env):
     
     def _get_observation(self) -> np.ndarray:
         """
-        Create 33-dimensional observation vector with carefully selected features.
-        
-        This is a cleaner, more focused observation space than the previous 53-dim version.
-        Key improvements:
-        - Removed noisy ghost direction features
-        - Removed redundant multi-distance wall features  
-        - Added clearer danger/food signals per direction
-        - Added escape-relevant features
+        Create 33-dimensional observation vector.
+
+        Features include:
+        - Danger/food signals per direction
+        - Ghost distances and scared timers
+        - Escape-relevant features
         """
         obs = np.zeros(OBS_DIM, dtype=np.float32)
         

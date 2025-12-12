@@ -50,8 +50,8 @@ Game Engine (adapted from UC Berkeley CS188):
 
 Key Contributions:
 -----------------
-1. Curriculum Learning Solution: Addressed "smart teacher problem" with 3-stage 
-   progressive training (random → fleeing → smart Pac-Man) teaching ghosts actual
+1. Curriculum Learning Solution: Addressed "smart teacher problem" with 3-stage
+   progressive training (random -> fleeing -> smart Pac-Man) teaching ghosts actual
    pursuit behavior before adversarial training
    
 2. Enhanced Reward Shaping: Implemented proximity-based rewards (50x stronger), 
@@ -72,9 +72,9 @@ Step 3: python src/evaluate_comparison.py --version 7 --episodes 100 --plot
 
 CURRICULUM LEARNING STAGES (Ghost Pretraining):
 -----------------------------------------------
-Stage 1 (30% - 60k steps):  Random Pac-Man   → Learn basic movement
-Stage 2 (50% - 100k steps):  Fleeing Pac-Man  → Learn pursuit & chase strategies
-Stage 3 (20% - 40k steps):  Smart Pac-Man    → Adapt to trained opponent
+Stage 1 (30% - 60k steps):  Random Pac-Man   -> Learn basic movement
+Stage 2 (50% - 100k steps):  Fleeing Pac-Man  -> Learn pursuit & chase strategies
+Stage 3 (20% - 40k steps):  Smart Pac-Man    -> Adapt to trained opponent
 
 RESULTS:
 ----------

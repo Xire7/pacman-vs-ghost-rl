@@ -104,10 +104,7 @@ class FleeingPacmanPolicy:
 
 
 class FleeingPacmanWrapper:
-    """
-    Wrapper to make FleeingPacmanPolicy compatible with the training pipeline.
-    This allows us to use it in IndependentGhostEnv without major refactoring.
-    """
+    """Wrapper to make FleeingPacmanPolicy compatible with IndependentGhostEnv."""
     
     def __init__(self):
         self.policy = FleeingPacmanPolicy()
@@ -637,7 +634,7 @@ def main():
             improvement = ((wr_baseline - wr_after_pretrain) / wr_baseline) * 100
             print(f"\n Curriculum training successful!")
             print(f"  Ghosts are {improvement:.1f}% more challenging than random")
-            print(f"  Ghosts learned: movement → pursuit → adaptation")
+            print(f"  Ghosts learned: movement -> pursuit -> adaptation")
         else:
             print(f"\n Ghosts not yet better than random")
             print(f"  Consider increasing --ghost-pretrain-steps")
@@ -659,7 +656,7 @@ def main():
         
         # Train ghosts
         ghost_version = round_num
-        print(f"\nPhase: Train Ghosts (→ v{ghost_version})")
+        print(f"\nPhase: Train Ghosts (-> v{ghost_version})")
         ghost_order = list(range(1, num_ghosts + 1))
         np.random.shuffle(ghost_order)
         
@@ -672,7 +669,7 @@ def main():
         
         # Train Pac-Man
         pacman_version = round_num
-        print(f"\nPhase: Train Pac-Man (→ v{pacman_version})")
+        print(f"\nPhase: Train Pac-Man (-> v{pacman_version})")
         pacman_model, pacman_path, vecnorm_stats = train_pacman(
             pacman_path, args.layout, dirs, ghost_models,
             args.pacman_steps, pacman_version, vecnorm_stats=vecnorm_stats

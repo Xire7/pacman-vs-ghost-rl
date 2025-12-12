@@ -9,9 +9,7 @@ from gym_env import PacmanEnv
 class IndependentGhostEnv(gym.Env):
     """
     Environment that trains each ghost with its own DQN.
-    
-    Key insight: Instead of one network controlling all ghosts,
-    we have 4 separate networks, each seeing only their own ghost's perspective.
+    Each ghost has a separate network with its own perspective.
     """
     
     def __init__(self, ghost_index, layout_name='mediumClassic', 
@@ -110,7 +108,7 @@ class IndependentGhostEnv(gym.Env):
             normalized_batch = vecnorm.normalize_obs(obs_batch)
             return normalized_batch[0]  # Return unbatched
         except Exception as e:
-            print(f"  ⚠ Warning: VecNormalize normalization failed: {e}")
+            print(f"  Warning: VecNormalize normalization failed: {e}")
             return obs
     
     def reset(self, *, seed=None, options=None):

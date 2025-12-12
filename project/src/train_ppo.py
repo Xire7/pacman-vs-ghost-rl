@@ -162,7 +162,7 @@ def train(args):
             lr_schedule = linear_schedule(args.lr, args.lr_final)
             model.learning_rate = lr_schedule
             model.lr_schedule = lr_schedule
-            print(f"LR schedule: {args.lr} → {args.lr_final} (linear decay)")
+            print(f"LR schedule: {args.lr} -> {args.lr_final} (linear decay)")
         else:
             model.learning_rate = args.lr
             model.lr_schedule = lambda _: args.lr
@@ -170,7 +170,7 @@ def train(args):
     else:
         if args.lr_decay:
             lr = linear_schedule(args.lr, args.lr_final)
-            print(f"LR schedule: {args.lr} → {args.lr_final} (linear decay)")
+            print(f"LR schedule: {args.lr} -> {args.lr_final} (linear decay)")
         else:
             lr = args.lr
             print(f"LR: {args.lr} (constant)")

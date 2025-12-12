@@ -1,6 +1,5 @@
 """
 Visualize and Record trained Pac-Man vs Ghosts agents
-FIXED: Now supports VecNormalize!
 """
 
 import argparse
@@ -26,7 +25,7 @@ def visualize_game(
     record_video=False,
     video_folder='videos',
     video_fps=10,
-    vecnorm_path=None  # NEW: VecNormalize path
+    vecnorm_path=None
 ):
     # Install dependencies if recording
     if record_video:
@@ -156,7 +155,7 @@ def visualize_game(
                 bbox = (x - padding, y - padding, x + w + padding, y + h + padding)
                 print(f"  Recording window: {w}x{h} at ({x}, {y})")
             except Exception as e:
-                print(f"  ⚠ Could not get window coordinates: {e}")
+                print(f"  Warning: Could not get window coordinates: {e}")
                 print(f"  Will use full screen capture")
         
         while not done:
@@ -313,7 +312,7 @@ def main():
         record_video=args.record,
         video_folder=args.video_folder,
         video_fps=args.video_fps,
-        vecnorm_path=args.vecnorm_path  # NEW parameter
+        vecnorm_path=args.vecnorm_path
     )
 
 
