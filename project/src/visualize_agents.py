@@ -38,7 +38,7 @@ def visualize_game(
             subprocess.check_call(['pip', 'install', 'pillow', 'imageio[ffmpeg]'])
             from PIL import ImageGrab
             import imageio
-            print("✓ Dependencies installed!\n")
+            print("Dependencies installed!\n")
         
         os.makedirs(video_folder, exist_ok=True)
     
@@ -59,13 +59,13 @@ def visualize_game(
         
         if os.path.exists(candidate):
             vecnorm_path = candidate
-            print(f"✓ Auto-detected VecNormalize: {vecnorm_path}")
+            print(f"Auto-detected VecNormalize: {vecnorm_path}")
     
     if vecnorm_path and os.path.exists(vecnorm_path):
-        print(f"✓ Using VecNormalize: {vecnorm_path}")
+        print(f"Using VecNormalize: {vecnorm_path}")
         has_vecnorm = True
     else:
-        print(f"⚠ No VecNormalize found (model may perform poorly!)")
+        print(f"No VecNormalize found (model may perform poorly!)")
         has_vecnorm = False
     
     # load ghosts 
@@ -74,19 +74,19 @@ def visualize_game(
         ghost_path = os.path.join(ghost_model_dir, f"ghost_{i}_v{ghost_version}")
         if os.path.exists(ghost_path + ".zip"):
             ghost_models[i] = DQN.load(ghost_path)
-            print(f"✓ Loaded Ghost {i}: {ghost_path}")
+            print(f"Loaded Ghost {i}: {ghost_path}")
         else:
-            print(f"⚠ Ghost {i} not found: {ghost_path}")
+            print(f"Ghost {i} not found: {ghost_path}")
     
     if len(ghost_models) == 0:
         print("Error: No ghost models loaded!")
         return None
     
     if record_video:
-        print(f"\n✓ Video recording enabled")
+        print(f"\nVideo recording enabled")
         print(f"  Saving to: {video_folder}")
         print(f"  Format: MP4 @ {video_fps} FPS")
-        print(f"  ⚠ Do NOT minimize or cover the game window during recording!")
+        print(f" Do NOT minimize or cover the game window during recording!")
     
     print(f"\n{'='*60}")
     print(f"Starting visualization ({n_episodes} episodes)")
@@ -214,9 +214,9 @@ def visualize_game(
             
             try:
                 imageio.mimsave(video_path, frames, fps=video_fps, codec='libx264')
-                print(f"  ✓ Saved video: {video_filename} ({len(frames)} frames)")
+                print(f"Saved video: {video_filename} ({len(frames)} frames)")
             except Exception as e:
-                print(f"  ✗ Failed to save video: {e}")
+                print(f"Failed to save video: {e}")
         
         info = info[0]
         
@@ -270,7 +270,7 @@ def visualize_game(
         print(f"\nStatistics saved to: {stats_path}")
         print(f"Videos saved to: {video_folder}")
     
-    print("\n✓ Visualization complete!")
+    print("\nVisualization complete!")
     
     return all_stats
 
