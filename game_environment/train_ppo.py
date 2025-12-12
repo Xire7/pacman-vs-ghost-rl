@@ -120,7 +120,7 @@ def train(args):
     print(f"Training PPO on {args.layout}")
     print(f"Timesteps: {args.timesteps:,} | Envs: {args.num_envs}")
     print(f"Device: {device} | Normalize: {args.normalize}")
-    print(f"TensorBoard log: {log_dir}")  # Show where logs go
+    print(f"TensorBoard log: {log_dir}")  
     print(f"{'='*60}\n")
     
     env = create_env(args.layout, args.ghost_type, args.num_envs, args.max_steps, 
@@ -144,20 +144,17 @@ def train(args):
     
     if args.resume:
         print(f"Loading model from {args.resume}")
-        # FIX 1: Load model without tensorboard_log to prevent timestep continuation
         model = MaskablePPO.load(args.resume, env=env, device=device)
         
-        # FIX 2: Reset timestep counter for clean TensorBoard logging
         model.num_timesteps = 0
         model._num_timesteps_at_start = 0
         
-        # FIX 3: Set NEW tensorboard directory for this training session
         model.tensorboard_log = log_dir
         
         print(f"Reset timestep counter to 0")
         print(f"New TensorBoard directory: {log_dir}")
         
-        # Update hyperparameters
+        # update hyperparameters
         if args.lr_decay:
             lr_schedule = linear_schedule(args.lr, args.lr_final)
             model.learning_rate = lr_schedule
@@ -189,7 +186,7 @@ def train(args):
             max_grad_norm=0.5,
             target_kl=args.target_kl,
             policy_kwargs=policy_kwargs,
-            tensorboard_log=log_dir,  # Clean start with unique directory
+            tensorboard_log=log_dir,  
             verbose=1,
             device=device,
         )
@@ -310,7 +307,7 @@ def main():
     parser.add_argument('--timesteps', type=int, default=500000)
     parser.add_argument('--num-envs', type=int, default=16)
     
-    # Learning rate settings
+    # learning rate settings
     parser.add_argument('--lr-decay', action='store_true', help='Enable linear LR decay')
     parser.add_argument('--lr', type=float, default=2.5e-4, help='Initial learning rate')
     parser.add_argument('--lr-final', type=float, default=1e-5, help='Final LR when using decay')
@@ -326,11 +323,9 @@ def main():
     parser.add_argument('--vf-coef', type=float, default=0.5, help='Value function coefficient')
     parser.add_argument('--target-kl', type=float, default=0.02, help='Target KL divergence')
     
-    # Network architecture
     parser.add_argument('--net-arch', type=int, nargs='+', default=[256, 256], 
                        help='Network architecture')
     
-    # Other settings
     parser.add_argument('--normalize', action='store_true', 
                        help='Use VecNormalize for obs/reward normalization')
     parser.add_argument('--cpu', action='store_true', help='Force CPU training')

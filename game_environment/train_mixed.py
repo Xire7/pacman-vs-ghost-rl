@@ -142,11 +142,10 @@ def load_pretrained_pacman(model_path):
     """
     print(f"\nLoading pretrained Pac-Man from: {model_path}")
     
-    # Check for VecNormalize file
+    # check for VecNormalize file
     model_dir = os.path.dirname(model_path)
     vecnorm_path = os.path.join(model_dir, 'vecnormalize.pkl')
 
-    # If not found and we're in a subdirectory (like "best/"), check parent
     if not os.path.exists(vecnorm_path):
         parent_dir = os.path.dirname(model_dir)
         parent_vecnorm = os.path.join(parent_dir, 'vecnormalize.pkl')
@@ -239,21 +238,21 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
     print(f"Stage 3 (20%): Smart Pac-Man    - {int(total_timesteps * 0.2):,} steps")
     print(f"{'='*60}\n")
     
-    # Calculate timesteps per stage
+    # calculate timesteps per stage
     stage1_steps = int(total_timesteps * 0.3)
     stage2_steps = int(total_timesteps * 0.5)
-    stage3_steps = total_timesteps - stage1_steps - stage2_steps  # Remainder
+    stage3_steps = total_timesteps - stage1_steps - stage2_steps  # remainder
     
     tb_log_dir = os.path.join(dirs['logs'], f"ghost_{ghost_idx}_pretrain_v0")
     
-    # ========== STAGE 1: RANDOM PAC-MAN (30%) ==========
+    # random Pac-Man (30%)
     print(f"Stage 1/3: Learning basics vs Random Pac-Man...")
     print(f"  Goal: Basic movement, wall avoidance, staying near center")
     
     env1 = IndependentGhostEnv(
         ghost_index=ghost_idx,
         layout_name=layout,
-        pacman_policy=None,  # Random Pac-Man
+        pacman_policy=None,  # random Pac-Man
         other_ghost_policies=None,
         max_steps=500
     )
@@ -286,24 +285,23 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
     
     env1.close()
     
-    # ========== STAGE 2: FLEEING PAC-MAN (50%) ==========
+    # fleeing Pac-Man (50%)
     print(f"Stage 2/3: Learning pursuit vs Fleeing Pac-Man...")
     print(f"  Goal: Chase behavior, cut-offs, trapping strategies")
     
     env2 = IndependentGhostEnv(
         ghost_index=ghost_idx,
         layout_name=layout,
-        pacman_policy=FleeingPacmanWrapper(),  # Fleeing Pac-Man
+        pacman_policy=FleeingPacmanWrapper(),  # fleeing Pac-Man
         other_ghost_policies=None,
         max_steps=500
     )
     
-    # Transfer to new environment
     model.set_env(env2)
     
-    # Reduce learning rate for fine-tuning
+    # reduce learning rate for fine-tuning
     model.learning_rate = 3e-4
-    model.exploration_rate = 0.15  # Keep some exploration
+    model.exploration_rate = 0.15  # keep some exploration
     
     print(f"  Training for {stage2_steps:,} steps...")
     print(f"  (Learning rate reduced to 3e-4 for stability)")
@@ -312,11 +310,11 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
     
     env2.close()
     
-    # ========== STAGE 3: SMART PAC-MAN (20%) ==========
+    # smart Pac-Man (20%)
     print(f"Stage 3/3: Adapting to Smart Pac-Man...")
     print(f"  Goal: Handle opponent's evasive strategies")
     
-    # Load other pretrained ghosts if they exist (for coordination)
+    # load other pretrained ghosts if they exist (for coordination)
     other_ghosts = {}
     for i in range(1, num_ghosts + 1):
         if i != ghost_idx:
@@ -331,16 +329,14 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
     env3 = IndependentGhostEnv(
         ghost_index=ghost_idx,
         layout_name=layout,
-        pacman_policy=pacman_model,  # Smart trained Pac-Man
+        pacman_policy=pacman_model,  # smart trained Pac-Man
         other_ghost_policies=other_ghosts if other_ghosts else None,
         max_steps=500,
         vecnorm_path=vecnorm_stats
     )
     
-    # transfer to new environment
     model.set_env(env3)
     
-    # further reduce learning rate for adaptation
     model.learning_rate = 1e-4
     model.exploration_rate = 0.05  # minimal exploration, mostly exploitation
     
@@ -351,7 +347,7 @@ def pretrain_ghost_curriculum(ghost_idx, pacman_model, layout, dirs, total_times
     
     env3.close()
     
-    # Save the curriculum-trained model
+    # save the curriculum-trained model
     model.save(os.path.join(dirs['models'], f"ghost_{ghost_idx}_v0"))
     print(f" Ghost {ghost_idx} curriculum training complete (saved as v0)")
     print(f"  Total timesteps: {total_timesteps:,}")
@@ -374,7 +370,7 @@ def train_ghost(ghost_idx, pacman_model, ghost_models, layout, dirs, timesteps, 
     other_ghosts = {i: ghost_models[i] for i in range(1, num_ghosts + 1) 
                     if i != ghost_idx and ghost_models[i] is not None}
     
-    # Create ghost training environment
+    # create ghost training environment 
     env = IndependentGhostEnv(
         ghost_index=ghost_idx,
         layout_name=layout,
@@ -396,8 +392,8 @@ def train_ghost(ghost_idx, pacman_model, ghost_models, layout, dirs, timesteps, 
         model._num_timesteps_at_start = 0
         model.tensorboard_log = tb_log_dir
         
-        model.learning_rate = 2e-4  # Lower LR for refinement
-        model.exploration_rate = 0.08  # Keep some exploration
+        model.learning_rate = 2e-4  # lower LR for refinement
+        model.exploration_rate = 0.08  # keep some exploration
         print(f"    Refining for {timesteps:,} timesteps (lr=2e-4, ε=0.08)")
         print(f"    TensorBoard: {tb_log_dir}")
     else:
@@ -522,7 +518,6 @@ def train_pacman(pacman_path, layout, dirs, ghost_models, timesteps, version, n_
     
     return model2, save_path + ".zip", vecnorm_save_path
 
-
 def main():
     parser = argparse.ArgumentParser(
         description='Mixed Adversarial Training with Curriculum Learning',
@@ -599,7 +594,7 @@ def main():
     
     ghost_models = {i: None for i in range(1, num_ghosts + 1)}
     
-    # ========== GHOST CURRICULUM PRETRAINING PHASE ==========
+    # ghost curriculum pre-training phase
     if not args.skip_ghost_pretrain:
         print(f"\n{'='*60}")
         print(f"PHASE 0: GHOST CURRICULUM PRETRAINING")
@@ -647,7 +642,7 @@ def main():
         print(f"\n SKIPPED ghost curriculum pretraining")
         print(f"Ghosts will start from scratch (not recommended)\n")
     
-    # ========== ADVERSARIAL TRAINING LOOP ==========
+    # adversarial training loop 
     print(f"\n{'='*60}")
     print(f"ADVERSARIAL TRAINING ROUNDS")
     print(f"{'='*60}\n")
@@ -657,7 +652,7 @@ def main():
         print(f"ROUND {round_num}/{args.rounds}")
         print(f"{'─'*60}")
         
-        # Train ghosts
+        # train ghosts
         ghost_version = round_num
         print(f"\nPhase: Train Ghosts (→ v{ghost_version})")
         ghost_order = list(range(1, num_ghosts + 1))
@@ -670,7 +665,7 @@ def main():
                 vecnorm_stats=vecnorm_stats
             )
         
-        # Train Pac-Man
+        # train Pac-Man
         pacman_version = round_num
         print(f"\nPhase: Train Pac-Man (→ v{pacman_version})")
         pacman_model, pacman_path, vecnorm_stats = train_pacman(
@@ -678,7 +673,7 @@ def main():
             args.pacman_steps, pacman_version, vecnorm_stats=vecnorm_stats
         )
         
-        # Evaluate
+        # evaluate
         print(f"\n{'─'*60}")
         print(f"Round {round_num} Evaluation")
         print(f"{'─'*60}")
@@ -696,7 +691,7 @@ def main():
         if round_num > 1 and wr_trained > 0.85:
             print(f"\n Pac-Man dominating - ghosts may need more training")
     
-    # ========== FINAL EVALUATION ==========
+    # final evaluation 
     print(f"\n\n{'='*60}")
     print(f"FINAL RESULTS")
     print(f"{'='*60}")
@@ -716,7 +711,7 @@ def main():
         challenge_increase = ((baseline - final_trained) / baseline) * 100
         print(f"  Ghosts are {challenge_increase:.1f}% more challenging!")
     
-    # Save best model
+    # save best model
     pacman_model.save(os.path.join(dirs['models'], "pacman_best"))
     print(f"\n Saved best Pac-Man: {dirs['models']}/pacman_best.zip")
     print(f" VecNormalize stats: {vecnorm_stats}")

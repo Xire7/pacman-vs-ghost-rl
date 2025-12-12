@@ -12,19 +12,19 @@ def extract_pacman_observation(game_state, original_food_count):
 
         features = []
 
-        # Pac-Man position (2)
+        # pac-Man position (2)
         pacman_pos = game_state.getPacmanPosition()
         features.append(2.0 * pacman_pos[0] / (width - 1) - 1.0)
         features.append(2.0 * pacman_pos[1] / (height - 1) - 1.0)
 
-        # Pac-Man direction (2)
+        # pac-Man direction (2)
         pacman_state = game_state.data.agentStates[0]
         direction = pacman_state.getDirection()
         dx, dy = Actions.directionToVector(direction)
         features.append(float(dx))
         features.append(float(dy))
 
-        # Ghost info (16 = 4 ghosts × 4 features)
+        # ghost info (16 = 4 ghosts × 4 features)
         ghost_states = game_state.getGhostStates()
         for i in range(4):
             if i < len(ghost_states):
@@ -37,7 +37,7 @@ def extract_pacman_observation(game_state, original_food_count):
             else:
                 features.extend([0.0, 0.0, 0.0, 0.0])
 
-        # Food info (3)
+        # food info (3)
         food_positions = game_state.getFood().asList()
         num_food = len(food_positions)
 
@@ -57,7 +57,7 @@ def extract_pacman_observation(game_state, original_food_count):
         else:
             features.append(1.0)
 
-        # Ghost distances (2)
+        # ghost distances (2)
         dangerous_ghost_dists = []
         scared_ghost_dists = []
         for ghost in ghost_states:
@@ -80,12 +80,12 @@ def extract_pacman_observation(game_state, original_food_count):
         else:
             features.append(-1.0)
 
-        # Score (1)
+        # score (1)
         score = game_state.getScore()
         normalized_score = np.clip(score / 500.0, -1.0, 1.0)
         features.append(normalized_score)
 
-        # Direction to nearest food (4)
+        # direction to nearest food (4)
         if food_positions:
             distances_with_pos = [(abs(pacman_pos[0] - fx) + abs(pacman_pos[1] - fy), (fx, fy))
                                     for fx, fy in food_positions]
@@ -147,31 +147,31 @@ def extract_ghost_observation(game_state, ghost_index):
     
     state = []
     
-    # [0-1] This ghost's position
+    # [0-1] this ghost's position
     ghost_pos = game_state.getGhostPosition(ghost_index)
     state.extend([ghost_pos[0] / width, ghost_pos[1] / height])
     
-    # [2-3] This ghost's scared state
+    # [2-3] this ghost's scared state
     ghost_state = game_state.getGhostState(ghost_index)
     state.extend([
         1.0 if ghost_state.scaredTimer > 0 else 0.0,
         ghost_state.scaredTimer / 40.0
     ])
     
-    # [4-5] Pac-Man position
+    # [4-5] pac-Man position
     pacman_pos = game_state.getPacmanPosition()
     state.extend([pacman_pos[0] / width, pacman_pos[1] / height])
     
-    # [6-7] Relative position to Pac-Man
+    # [6-7] relative position to Pac-Man
     rel_x = (pacman_pos[0] - ghost_pos[0]) / width
     rel_y = (pacman_pos[1] - ghost_pos[1]) / height
     state.extend([rel_x, rel_y])
     
-    # [8] Manhattan distance to Pac-Man
+    # [8] manhattan distance to Pac-Man
     dist = manhattanDistance(ghost_pos, pacman_pos)
     state.append(dist / max_dist)
     
-    # [9-12] Wall sensors in 4 directions (N, S, E, W)
+    # [9-12] wall sensors in 4 directions (N, S, E, W)
     gx, gy = int(ghost_pos[0]), int(ghost_pos[1])
     directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
     for dx, dy in directions:
@@ -181,13 +181,13 @@ def extract_ghost_observation(game_state, ghost_index):
         else:
             state.append(1.0)
     
-    # [13-16] Legal action flags
+    # [13-16] legal action flags
     legal_actions = game_state.getLegalActions(ghost_index)
     action_dirs = [Directions.NORTH, Directions.SOUTH, Directions.EAST, Directions.WEST]
     for d in action_dirs:
         state.append(1.0 if d in legal_actions else 0.0)
     
-    # [17-20] Other ghost distances (normalized)
+    # [17-20] other ghost distances (normalized)
     num_agents = game_state.getNumAgents()
     other_ghost_dists = []
     for i in range(1, num_agents):
@@ -200,7 +200,7 @@ def extract_ghost_observation(game_state, ghost_index):
         other_ghost_dists.append(1.0)
     state.extend(other_ghost_dists[:4])
     
-    # [21-24] Direction to Pac-Man one-hot
+    # [21-24] direction to Pac-Man one-hot
     dx = pacman_pos[0] - ghost_pos[0]
     dy = pacman_pos[1] - ghost_pos[1]
     dir_to_pacman = [0.0, 0.0, 0.0, 0.0]
@@ -211,8 +211,6 @@ def extract_ghost_observation(game_state, ghost_index):
     state.extend(dir_to_pacman)
     
     return np.array(state, dtype=np.float32)
-
-
 
 def get_best_legal_action(policy, obs, legal_actions):
     """
@@ -233,9 +231,9 @@ def get_best_legal_action(policy, obs, legal_actions):
         0: Directions.NORTH, 1: Directions.SOUTH,
         2: Directions.EAST, 3: Directions.WEST, 4: Directions.STOP
     }
-    # Get action probabilities or Q-values from the policy
+    # get action probabilities or Q-values from the policy
     if hasattr(policy.policy, 'get_distribution'):
-        # For PPO (stochastic policies)
+        # for PPO (stochastic policies)
         policy.policy.set_training_mode(False)
         obs_tensor = policy.policy.obs_to_tensor(obs)[0]
            
@@ -243,26 +241,26 @@ def get_best_legal_action(policy, obs, legal_actions):
             distribution = policy.policy.get_distribution(obs_tensor)
             action_probs = distribution.distribution.probs.detach().cpu().numpy()[0]
     else:
-        # For DQN (Q-values)
+        # for DQN (Q-values)
         obs_tensor = policy.policy.obs_to_tensor(obs)[0]
 
         with torch.no_grad():
             q_values = policy.q_net(obs_tensor).detach().cpu().numpy()[0]
-            action_probs = q_values  # Higher Q-value = better action
+            action_probs = q_values  # higher Q-value = better action
     
-    # Create mask for legal actions
+    # create mask for legal actions
     legal_indices = [idx for idx, direction in action_map.items() 
                      if direction in legal_actions]
     
     if not legal_indices:
-        # Fallback if no legal actions (shouldn't happen)
+        # fallback if no legal actions (shouldn't happen)
         return np.random.choice(legal_actions)
     
-    # Mask illegal actions (set to -inf so they're never chosen)
+    # mask illegal actions (set to -inf so they're never chosen)
     masked_probs = np.full_like(action_probs, -np.inf)
     masked_probs[legal_indices] = action_probs[legal_indices]
     
-    # Choose action with highest probability/Q-value among legal actions
+    # choose action with highest probability/Q-value among legal actions
     best_action_idx = np.argmax(masked_probs)
 
     if best_action_idx not in legal_indices:
