@@ -27,7 +27,7 @@ Step 1: python src/train_ppo.py --timesteps 2000000 --num-envs 16 --normalize --
 # 2. Train adversarial agents
 python train_mixed.py --pacman models/ppo_mediumClassic_datetime/best/best_model.zip --rounds 7 --ghost-pretrain-steps 200000
 
-# 3. Visualize trained agents
+# 3. Visualize trained agents (adjust ghost version based on number of rounds trained)
 python visualize_agents.py --pacman-path training_output/[mixed_####_####]/models/pacman_best.zip --ghost-dir training_output/[mixed_####_####]/models --ghost-version 7 --episodes 5
 ```
 
