@@ -2,6 +2,8 @@
 
 Adversarial reinforcement learning project training PPO-based Pac-Man agents against DQN-based Ghost agents using the Berkeley Pac-Man game engine.
 
+![Pacman vs Ghost Adversarial Training Thumbnail](thumbnail\pacmanvsghostRLThumbnail.png)
+
 ## Quick Start
 ```bash
 pip install -r requirements.txt
