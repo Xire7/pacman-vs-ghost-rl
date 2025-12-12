@@ -27,7 +27,7 @@ def visualize_game(
     video_fps=10,
     vecnorm_path=None
 ):
-    # Install dependencies if recording
+    # install dependencies if recording
     if record_video:
         try:
             from PIL import ImageGrab
@@ -38,7 +38,7 @@ def visualize_game(
             subprocess.check_call(['pip', 'install', 'pillow', 'imageio[ffmpeg]'])
             from PIL import ImageGrab
             import imageio
-            print("Dependencies installed!\n")
+            print("✓ Dependencies installed!\n")
         
         os.makedirs(video_folder, exist_ok=True)
     
@@ -46,12 +46,11 @@ def visualize_game(
     print(f"Loading models...")
     print(f"{'='*60}")
     
-    # Auto-detect VecNormalize if not provided
+    # auto-detect VecNormalize if not provided
     if vecnorm_path is None:
         model_dir = os.path.dirname(pacman_model_path)
         candidate = os.path.join(model_dir, 'vecnormalize.pkl')
         
-        # Check parent directory too (for best/ subdirectory)
         if not os.path.exists(candidate):
             parent_dir = os.path.dirname(model_dir)
             parent_candidate = os.path.join(parent_dir, 'vecnormalize.pkl')
@@ -60,40 +59,40 @@ def visualize_game(
         
         if os.path.exists(candidate):
             vecnorm_path = candidate
-            print(f"Auto-detected VecNormalize: {vecnorm_path}")
+            print(f"✓ Auto-detected VecNormalize: {vecnorm_path}")
     
     if vecnorm_path and os.path.exists(vecnorm_path):
-        print(f"Using VecNormalize: {vecnorm_path}")
+        print(f"✓ Using VecNormalize: {vecnorm_path}")
         has_vecnorm = True
     else:
-        print(f"No VecNormalize found (model may perform poorly!)")
+        print(f"⚠ No VecNormalize found (model may perform poorly!)")
         has_vecnorm = False
     
-    # Load ghosts first
+    # load ghosts 
     ghost_models = {}
     for i in range(1, num_ghosts + 1):
         ghost_path = os.path.join(ghost_model_dir, f"ghost_{i}_v{ghost_version}")
         if os.path.exists(ghost_path + ".zip"):
             ghost_models[i] = DQN.load(ghost_path)
-            print(f"Loaded Ghost {i}: {ghost_path}")
+            print(f"✓ Loaded Ghost {i}: {ghost_path}")
         else:
-            print(f"Ghost {i} not found: {ghost_path}")
+            print(f"⚠ Ghost {i} not found: {ghost_path}")
     
     if len(ghost_models) == 0:
         print("Error: No ghost models loaded!")
         return None
     
     if record_video:
-        print(f"\nVideo recording enabled")
+        print(f"\n✓ Video recording enabled")
         print(f"  Saving to: {video_folder}")
         print(f"  Format: MP4 @ {video_fps} FPS")
-        print(f"  Do NOT minimize or cover the game window during recording!")
+        print(f"  ⚠ Do NOT minimize or cover the game window during recording!")
     
     print(f"\n{'='*60}")
     print(f"Starting visualization ({n_episodes} episodes)")
     print(f"{'='*60}\n")
     
-    # Statistics tracking
+    # statistics
     all_stats = {
         'episodes': [],
         'pacman_wins': 0,
@@ -104,26 +103,26 @@ def visualize_game(
     }
     
     for episode in range(n_episodes):
-        # Create environment with rendering
+        # create environment with rendering
         base_env = PacmanEnv(
             layout_name=layout_name,
             ghost_policies=ghost_models,
             max_steps=500,
             render_mode='human',
         )
-        # Wrap with ActionMasker for MaskablePPO
+        # wrap with ActionMasker for MaskablePPO
         env = ActionMasker(base_env, lambda e: e.action_masks())
         
-        # Wrap in DummyVecEnv for VecNormalize compatibility
+        # wrap in DummyVecEnv for VecNormalize compatibility
         env = DummyVecEnv([lambda: env])
         
-        # Apply VecNormalize if available (CRITICAL FIX!)
+        # apply VecNormalize if available
         if has_vecnorm:
             env = VecNormalize.load(vecnorm_path, env)
-            env.training = False  # Don't update stats during visualization
-            env.norm_reward = False  # Don't normalize rewards
+            env.training = False  
+            env.norm_reward = False  
         
-        # Load Pac-Man model with the env
+        # load Pac-Man model with the env
         pacman_model = MaskablePPO.load(pacman_model_path, env=env)
         
         obs = env.reset()
@@ -135,11 +134,10 @@ def visualize_game(
         print(f"Episode {episode + 1}/{n_episodes}")
         print(f"{'─'*60}")
         
-        # For video recording, get window coordinates
         frames = []
         bbox = None
         if record_video:
-            time.sleep(1.5)  # Wait for window to render
+            time.sleep(1.5)  
             try:
                 import graphicsUtils
                 canvas = graphicsUtils._canvas
@@ -159,7 +157,7 @@ def visualize_game(
                 print(f"  Will use full screen capture")
         
         while not done:
-            # Capture frame for video
+            # capture frame for video
             if record_video:
                 try:
                     if bbox:
@@ -170,17 +168,16 @@ def visualize_game(
                 except Exception as e:
                     print(f"  Frame capture error: {e}")
             
-            # Get action masks from vectorized env
+            # get action masks from vectorized env
             action_masks = env.env_method('action_masks')[0]
             
-            # Pac-Man action with action masking (now with normalized obs!)
+            # Pac-Man action with action masking
             action, _ = pacman_model.predict(
                 obs,
                 deterministic=True,
                 action_masks=action_masks
             )
             
-            # Convert to int
             if hasattr(action, 'item'):
                 action = int(action.item())
             elif isinstance(action, np.ndarray):
@@ -192,14 +189,13 @@ def visualize_game(
             steps += 1
             done = done_vec[0]
             
-            # Frame timing
+            
             if not record_video:
                 time.sleep(frame_delay)
-            # When recording, go as fast as possible (no sleep)
-        
-        # Keep showing final state for a moment
+            
+        # showing final state
         if record_video:
-            for _ in range(int(video_fps * 0.5)):  # Show for 0.5 seconds
+            for _ in range(int(video_fps * 0.5)):  # show for 0.5 seconds
                 try:
                     if bbox:
                         frame = ImageGrab.grab(bbox=bbox)
@@ -211,21 +207,20 @@ def visualize_game(
         
         env.close()
         
-        # Save video
+        # save video
         if record_video and len(frames) > 0:
             video_filename = f"episode_{episode+1}_v{ghost_version}.mp4"
             video_path = os.path.join(video_folder, video_filename)
             
             try:
                 imageio.mimsave(video_path, frames, fps=video_fps, codec='libx264')
-                print(f"  Saved video: {video_filename} ({len(frames)} frames)")
+                print(f"  ✓ Saved video: {video_filename} ({len(frames)} frames)")
             except Exception as e:
-                print(f"  Failed to save video: {e}")
+                print(f"  ✗ Failed to save video: {e}")
         
-        # Extract info from vectorized wrapper
         info = info[0]
         
-        # Episode summary
+        # episode summary
         if info.get('win', False):
             result = "PAC-MAN WINS!"
             all_stats['pacman_wins'] += 1
@@ -254,7 +249,7 @@ def visualize_game(
         print(f"  Steps:  {steps}")
         print(f"  Reward: {episode_reward:.2f}")
     
-    # Print summary
+    # print summary
     print(f"\n\n{'='*60}")
     print(f"SUMMARY ({n_episodes} episodes)")
     print(f"{'='*60}")
@@ -267,7 +262,7 @@ def visualize_game(
     print(f"  Avg Steps:     {np.mean(all_stats['steps']):.1f}")
     print(f"{'='*60}")
     
-    # Save statistics to JSON
+    # save statistics to JSON
     if record_video:
         stats_path = os.path.join(video_folder, f"stats_v{ghost_version}.json")
         with open(stats_path, 'w') as f:
@@ -275,10 +270,9 @@ def visualize_game(
         print(f"\nStatistics saved to: {stats_path}")
         print(f"Videos saved to: {video_folder}")
     
-    print("\nVisualization complete!")
+    print("\n✓ Visualization complete!")
     
     return all_stats
-
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize trained Pac-Man vs Ghosts')
@@ -314,7 +308,6 @@ def main():
         video_fps=args.video_fps,
         vecnorm_path=args.vecnorm_path
     )
-
 
 if __name__ == '__main__':
     main()

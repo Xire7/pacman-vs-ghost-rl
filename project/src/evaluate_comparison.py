@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from typing import Dict, Any, Optional, Union
 
-# --- Add game_environment to path to enable imports ---
+# add game_environment to path to enable imports 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if "game_environment" not in script_dir:
     sys.path.insert(0, os.path.join(script_dir, 'game_environment'))
@@ -23,7 +23,7 @@ except ImportError:
     sys.exit(1)
 
 
-# Define type hint for convenience
+# define type hint for convenience
 VecEnvType = Union[VecNormalize, DummyVecEnv]
 SingleEnvType = ActionMasker
 
@@ -34,15 +34,16 @@ def load_models(run_dir: str, num_ghosts: int, final_version: int) -> tuple[Mask
     model_dir_base = os.path.join(run_dir, 'models')
     pacman_path_zip = os.path.join(model_dir_base, "mixed_pacman_best.zip")
 
-    # 1. Load Pac-Man Model
+    # load Pac-Man model
     print(f"Loading Pac-Man from: {pacman_path_zip}")
+
     if not os.path.exists(pacman_path_zip):
         raise FileNotFoundError(f"Pac-Man model file not found: {pacman_path_zip}")
     
     pacman_model = MaskablePPO.load(pacman_path_zip, custom_objects={})
     print("[OK] Pac-Man model loaded successfully.")
 
-    # 2. Check for VecNormalize stats
+    # check for vecnormalize stats
     vecnorm_path = os.path.join(model_dir_base, 'mixed_vecnormalize', 'vecnormalize.pkl')
     if os.path.exists(vecnorm_path):
         print(f"[OK] Found VecNormalize stats at: {vecnorm_path}")
@@ -50,7 +51,7 @@ def load_models(run_dir: str, num_ghosts: int, final_version: int) -> tuple[Mask
         vecnorm_path = None
         print("[X] VecNormalize stats not found. Assuming model was trained without normalization.")
 
-    # 3. Load Ghost Models
+    # load Ghost models
     ghost_models = {}
     print("Loading Ghost models...")
     ghost_version = final_version
@@ -64,7 +65,6 @@ def load_models(run_dir: str, num_ghosts: int, final_version: int) -> tuple[Mask
             print(f"  [X] Warning: Ghost {i} model not found. Will use RandomGhost for this agent.")
 
     return pacman_model, ghost_models, vecnorm_path
-
 
 def create_env_with_vecnorm(
     layout: str, 
@@ -81,18 +81,18 @@ def create_env_with_vecnorm(
             ghost_policies=ghost_models,
             ghost_type=ghost_type, 
             max_steps=500,
-            render_mode=render_mode  # Pass render mode (None or 'human')
+            render_mode=render_mode  # pass render mode (None or 'human')
         )
         return ActionMasker(env_unwrapped, lambda e: e.action_masks())
 
-    # Create a DummyVecEnv from the factory function
+    # create a DummyVecEnv from the factory function
     env = DummyVecEnv([make_env_fn])
 
-    # Apply VecNormalize if path exists
+    # apply VecNormalize if path exists
     if vecnorm_path:
         env_wrapper = VecNormalize.load(vecnorm_path, env)
-        env_wrapper.training = False  # Freeze running statistics for evaluation
-        env_wrapper.norm_reward = False # Do not normalize rewards for final score
+        env_wrapper.training = False  
+        env_wrapper.norm_reward = False 
         return env_wrapper
     else:
         return env
@@ -119,7 +119,7 @@ def evaluate_pacman(
     """
     wins = 0
     scores = []
-    wins_per_episode = []  # Track individual episode results for moving average
+    wins_per_episode = []  # tracking individual episode results for moving average
     
     render_mode = 'human' if render else None
     
@@ -127,12 +127,11 @@ def evaluate_pacman(
     print(f"\nEvaluating against {label} ({n_episodes} episodes)...")
 
     for i in range(1, n_episodes + 1):
-        # Create environment
+        # create env
         env_wrapper = create_env_with_vecnorm(layout, vecnorm_path, ghost_models, ghost_type, render_mode)
         
         is_vec_env = isinstance(env_wrapper, (VecNormalize, DummyVecEnv))
         
-        # Robust Reset
         reset_output = env_wrapper.reset()
         if isinstance(reset_output, tuple) and len(reset_output) == 2:
             obs, _ = reset_output
@@ -143,18 +142,17 @@ def evaluate_pacman(
         steps = 0
         
         while not done:
-            # Retrieve action masks
             if is_vec_env:
                 masks = env_wrapper.env_method('action_masks')[0]
             else:
                 masks = env_wrapper.action_masks()
                 
-            # Predict action
+            # predict action
             action, _ = model.predict(obs, deterministic=True, action_masks=masks)
             if isinstance(action, np.ndarray):
                 action = int(action.item())
             
-            # Robust Step
+            # step 
             if is_vec_env:
                 obs_array, _, done_array, info_list = env_wrapper.step([action])
                 obs = obs_array
@@ -164,13 +162,13 @@ def evaluate_pacman(
                 obs, _, terminated, truncated, info = env_wrapper.step(action)
                 done = terminated or truncated
             
-            # Render delay
+            # render delay
             if render:
                 time.sleep(frame_delay)
                 
             steps += 1
         
-        # Record results
+        # record results
         if info.get('win'):
             wins += 1
             wins_per_episode.append(1)
@@ -184,9 +182,9 @@ def evaluate_pacman(
         
         env_wrapper.close()
         
-        # Progress logging
+        # progress logging
         if render:
-            # If rendering, print every episode so user knows what happened
+            # print ever episode if rendered
             print(f"  Ep {i}: {result} | Score: {score} | Steps: {steps}")
         elif i % (n_episodes // 5 if n_episodes >= 5 else 1) == 0:
              print(f"  Episodes complete: {i}/{n_episodes} | Wins: {wins}")
@@ -210,7 +208,7 @@ def plot_moving_average_comparison(stats_trained, stats_random, window=10, save_
         window: Moving average window size
         save_path: Where to save the output image
     """
-    # Calculate moving averages
+    # calculate moving averages
     def moving_average(data, window):
         """Calculate moving average with given window size."""
         cumsum = np.cumsum(np.insert(data, 0, 0)) 
@@ -222,14 +220,14 @@ def plot_moving_average_comparison(stats_trained, stats_random, window=10, save_
     ma_trained = moving_average(wins_trained, window)
     ma_random = moving_average(wins_random, window)
     
-    # Episode numbers (offset by window/2 for centering moving average)
+    # episode numbers (offset by window/2 for centering moving average)
     episodes_trained = np.arange(window, len(wins_trained) + 1)
     episodes_random = np.arange(window, len(wins_random) + 1)
     
-    # Create figure
+    # create figure
     plt.figure(figsize=(12, 7))
     
-    # Plot moving averages
+    # plot moving averages
     plt.plot(episodes_trained, ma_trained * 100, 
              label=f'vs Trained Ghosts (DQN) - MA({window})', 
              linewidth=2.5, color='#e74c3c', alpha=0.9)
@@ -237,7 +235,7 @@ def plot_moving_average_comparison(stats_trained, stats_random, window=10, save_
              label=f'vs Random Ghosts - MA({window})', 
              linewidth=2.5, color='#3498db', alpha=0.9)
     
-    # Add horizontal lines for overall win rates
+    # add horizontal lines for overall win rates
     overall_trained = stats_trained['win_rate'] * 100
     overall_random = stats_random['win_rate'] * 100
     
@@ -246,7 +244,6 @@ def plot_moving_average_comparison(stats_trained, stats_random, window=10, save_
     plt.axhline(y=overall_random, color='#3498db', linestyle='--', 
                 linewidth=1.5, alpha=0.5, label=f'Overall vs Random: {overall_random:.1f}%')
     
-    # Styling
     plt.xlabel('Episode', fontsize=13, fontweight='bold')
     plt.ylabel('Win Rate (%)', fontsize=13, fontweight='bold')
     plt.title(f"PPO Pac-Man Performance: Trained vs Random Ghosts", 
@@ -254,10 +251,9 @@ def plot_moving_average_comparison(stats_trained, stats_random, window=10, save_
     plt.legend(loc='best', fontsize=11, framealpha=0.9)
     plt.grid(True, alpha=0.3, linestyle='--')
     
-    # Set y-axis limits
     plt.ylim(-5, 105)
     
-    # Add text box with statistics
+    # statistics
     stats_text = f'Final Statistics:\n'
     stats_text += f'vs Trained: {overall_trained:.1f}% ({stats_trained["win_rate"]*len(wins_trained):.0f}/{len(wins_trained)} wins)\n'
     stats_text += f'vs Random: {overall_random:.1f}% ({stats_random["win_rate"]*len(wins_random):.0f}/{len(wins_random)} wins)\n'
@@ -271,11 +267,11 @@ def plot_moving_average_comparison(stats_trained, stats_random, window=10, save_
     
     plt.tight_layout()
     
-    # Save figure
+    # save figure
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"\n[OK] Graph saved to: {save_path}")
     
-    # Also display if in interactive mode
+    # display if in interactive mode
     try:
         plt.show()
     except:
@@ -299,13 +295,13 @@ def main():
     parser.add_argument('--episodes', type=int, default=100,
                        help="Number of evaluation episodes per scenario.")
     
-    # Visualization args
+    # visualization args
     parser.add_argument('--render', action='store_true',
                        help="Enable real-time visualization of the games.")
     parser.add_argument('--frame-delay', type=float, default=0.05,
                        help="Delay between frames in seconds (default: 0.05).")
     
-    # Graph args
+    # graph args
     parser.add_argument('--plot', action='store_true',
                        help="Generate matplotlib comparison graph.")
     parser.add_argument('--window', type=int, default=10,
@@ -320,21 +316,21 @@ def main():
 
     args = parser.parse_args()
     
-    # --- Load Models ---
+    # load models
     try:
         pacman_model, trained_ghost_models, vecnorm_path = load_models(args.run_dir, args.num_ghosts, args.version)
     except FileNotFoundError as e:
         print(f"\nFATAL ERROR: {e}")
         return
 
-    # --- Run Evaluations ---
+    # run evaluations
     print(f"\n{'='*60}")
     print("STARTING EVALUATION RUNS")
     if args.render:
         print(f"Visualization Enabled (Delay: {args.frame_delay}s)")
     print(f"{'='*60}")
     
-    # 1. Evaluation against Trained Ghosts
+    # evaluation against trained ghosts
     stats_trained = evaluate_pacman(
         pacman_model, 
         args.layout, 
@@ -346,7 +342,7 @@ def main():
         frame_delay=args.frame_delay
     )
     
-    # 2. Evaluation against Random Ghosts
+    # evaluation against random ghosts
     stats_random = evaluate_pacman(
         pacman_model, 
         args.layout, 
@@ -358,7 +354,7 @@ def main():
         frame_delay=args.frame_delay
     )
     
-    # --- Print Comparison ---
+    # comparisons
     print(f"\n\n{'#'*70}")
     print("PAC-MAN MODEL EVALUATION COMPARISON")
     print(f"Model: PPO v{args.version} | Layout: {args.layout} | Episodes: {args.episodes}")
@@ -372,18 +368,17 @@ def main():
 
     print(f"{'#'*70}\n")
     
-    # --- Generate Plot ---
-    if args.plot:
-        print(f"\n{'='*60}")
-        print("GENERATING COMPARISON GRAPH")
-        print(f"{'='*60}")
-        
-        plot_moving_average_comparison(
-            stats_trained, 
-            stats_random, 
-            window=args.window,
-            save_path=args.save_plot
-        )
+    # plot 
+    print(f"\n{'='*60}")
+    print("GENERATING COMPARISON GRAPH")
+    print(f"{'='*60}")
+    
+    plot_moving_average_comparison(
+        stats_trained, 
+        stats_random, 
+        window=args.window,
+        save_path=args.save_plot
+    )
 
 
 if __name__ == '__main__':
