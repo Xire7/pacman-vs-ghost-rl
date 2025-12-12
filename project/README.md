@@ -1,5 +1,7 @@
 # Adversarial Multi-Agent Reinforcement Learning: Pac-Man vs. Ghosts
 
+Note that the files in src are solely used to run this jupyter notebook to follow project formatting directions. To train the models, please cd into **game_environment** and run the appropriate commands on that directory's train_ppo.py & train_mixed.py (details are listed in README.md at the root directory). While it may be possible to train in this directory (project/src) as we've copied the files onto it, there can be uncaught bugs.
+
 ## File Descriptions
 
 ### Main Deliverables
@@ -59,14 +61,20 @@
 ## Training Pipeline
 
 ```bash
-# Step 1: Train Pac-Man baseline
-python src/train_ppo.py --timesteps 2000000 --num-envs 16 --normalize --lr-decay
+# Step 0: CD into game_environment from the root directory
+cd game_environment # if you are in project/ do cd ../game_environment
 
-# Step 2: Curriculum + adversarial training
-python src/train_mixed.py --pacman [baseline] --rounds 7 --ghost-pretrain-steps 200000
+# Step 1: Train Pac-Man baseline (in game_environment)
+python game_environment/train_ppo.py --timesteps 2000000 --num-envs 16 --normalize --lr-decay
 
-# Step 3: Evaluate results
-python src/evaluate_comparison.py --version 7 --episodes 100 --plot
+# This will produce an output in game_environment/models/ppo_layoutname_date, use best/best_model.zip for step 2
+
+# Step 2: Curriculum + adversarial training (in game_environment)
+python game_environment/train_mixed.py --pacman game_environment/models/ppo_layoutName_datetime/best/best_model.zip --rounds 7 --ghost-pretrain-steps 200000
+
+# Step 3: Evaluate results (in game_environment)
+python game_environment/visualize_agents.py --pacman-path game_environment/training_output/[mixed_####_####]/models/pacman_best.zip --ghost-dir training_output/[mixed_####_####]/models --ghost-version 7 --episodes 5
+
 ```
 
 ## Curriculum Learning Stages (Ghost Pretraining)
