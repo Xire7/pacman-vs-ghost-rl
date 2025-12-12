@@ -32,24 +32,23 @@ def load_models(run_dir: str, num_ghosts: int, final_version: int) -> tuple[Mask
     """Loads all models and determines the VecNormalize path for Pac-Man."""
     
     model_dir_base = os.path.join(run_dir, 'models')
-    pacman_model_base_path = os.path.join(model_dir_base, f"pacman_v{final_version}")
-    pacman_path_zip = pacman_model_base_path + ".zip"
+    pacman_path_zip = os.path.join(model_dir_base, "mixed_pacman_best.zip")
 
     # 1. Load Pac-Man Model
-    print(f"Loading Pac-Man v{final_version} from: {pacman_path_zip}")
+    print(f"Loading Pac-Man from: {pacman_path_zip}")
     if not os.path.exists(pacman_path_zip):
         raise FileNotFoundError(f"Pac-Man model file not found: {pacman_path_zip}")
     
     pacman_model = MaskablePPO.load(pacman_path_zip, custom_objects={})
-    print("✓ Pac-Man model loaded successfully.")
+    print("[OK] Pac-Man model loaded successfully.")
 
     # 2. Check for VecNormalize stats
-    vecnorm_path = os.path.join(model_dir_base, 'vecnormalize.pkl')
+    vecnorm_path = os.path.join(model_dir_base, 'mixed_vecnormalize', 'vecnormalize.pkl')
     if os.path.exists(vecnorm_path):
-        print(f"✓ Found VecNormalize stats at: {vecnorm_path}")
+        print(f"[OK] Found VecNormalize stats at: {vecnorm_path}")
     else:
         vecnorm_path = None
-        print("✗ VecNormalize stats not found. Assuming model was trained without normalization.")
+        print("[X] VecNormalize stats not found. Assuming model was trained without normalization.")
 
     # 3. Load Ghost Models
     ghost_models = {}
@@ -60,9 +59,9 @@ def load_models(run_dir: str, num_ghosts: int, final_version: int) -> tuple[Mask
         ghost_path = os.path.join(model_dir_base, f"ghost_{i}_v{ghost_version}.zip")
         if os.path.exists(ghost_path):
             ghost_models[i] = DQN.load(ghost_path, custom_objects={})
-            print(f"  ✓ Ghost {i} v{ghost_version} loaded.")
+            print(f"  [OK] Ghost {i} v{ghost_version} loaded.")
         else:
-            print(f"  ✗ Warning: Ghost {i} model not found. Will use RandomGhost for this agent.")
+            print(f"  [X] Warning: Ghost {i} model not found. Will use RandomGhost for this agent.")
 
     return pacman_model, ghost_models, vecnorm_path
 
@@ -263,8 +262,8 @@ def plot_moving_average_comparison(stats_trained, stats_random, window=10, save_
     stats_text += f'vs Trained: {overall_trained:.1f}% ({stats_trained["win_rate"]*len(wins_trained):.0f}/{len(wins_trained)} wins)\n'
     stats_text += f'vs Random: {overall_random:.1f}% ({stats_random["win_rate"]*len(wins_random):.0f}/{len(wins_random)} wins)\n'
     stats_text += f'\nAvg Scores:\n'
-    stats_text += f'vs Trained: {stats_trained["avg_score"]:.1f} ± {stats_trained["std_score"]:.1f}\n'
-    stats_text += f'vs Random: {stats_random["avg_score"]:.1f} ± {stats_random["std_score"]:.1f}'
+    stats_text += f'vs Trained: {stats_trained["avg_score"]:.1f} +/- {stats_trained["std_score"]:.1f}\n'
+    stats_text += f'vs Random: {stats_random["avg_score"]:.1f} +/- {stats_random["std_score"]:.1f}'
     
     plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes,
              fontsize=10, verticalalignment='top',
@@ -274,7 +273,7 @@ def plot_moving_average_comparison(stats_trained, stats_random, window=10, save_
     
     # Save figure
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"\n✓ Graph saved to: {save_path}")
+    print(f"\n[OK] Graph saved to: {save_path}")
     
     # Also display if in interactive mode
     try:
@@ -365,11 +364,11 @@ def main():
     print(f"Model: PPO v{args.version} | Layout: {args.layout} | Episodes: {args.episodes}")
     print(f"{'#'*70}")
 
-    print(f"{'| Evaluation Scenario':<30} | {'Win Rate':<10} | {'Avg Score (±Std)':<25} |")
+    print(f"{'| Evaluation Scenario':<30} | {'Win Rate':<10} | {'Avg Score (+/-Std)':<25} |")
     print("-" * 70)
     
-    print(f"| {'vs TRAINED GHOSTS':<30} | {stats_trained['win_rate']*100:<9.1f}% | {stats_trained['avg_score']:<7.1f} (±{stats_trained['std_score']:<5.1f}) |")
-    print(f"| {'vs RANDOM GHOSTS (Baseline)':<30} | {stats_random['win_rate']*100:<9.1f}% | {stats_random['avg_score']:<7.1f} (±{stats_random['std_score']:<5.1f}) |")
+    print(f"| {'vs TRAINED GHOSTS':<30} | {stats_trained['win_rate']*100:<9.1f}% | {stats_trained['avg_score']:<7.1f} (+/-{stats_trained['std_score']:<5.1f}) |")
+    print(f"| {'vs RANDOM GHOSTS (Baseline)':<30} | {stats_random['win_rate']*100:<9.1f}% | {stats_random['avg_score']:<7.1f} (+/-{stats_random['std_score']:<5.1f}) |")
 
     print(f"{'#'*70}\n")
     

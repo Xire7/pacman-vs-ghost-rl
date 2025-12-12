@@ -10,11 +10,11 @@ project.html
 
 Models (Sample Data):
 --------------------
-models/pacman_v0.zip - untrained Pac-Man baseline (random actions)
+models/ppo_pacman_v0.zip - untrained Pac-Man baseline (random actions)
 models/ppo_pacman_best.zip - trained Pac-Man (2M steps, 94% win rate vs random)
-models/mixed_pacman_best.zip  - final Pac-Man after 7 adversarial rounds
-models/ghost_1_v7.zip  - trained ghost agent #1 (curriculum + adversarial)
-models/ghost_2_v7.zip  - trained ghost agent #2 (curriculum + adversarial)
+models/mixed_pacman_best.zip - final Pac-Man after 7 adversarial rounds
+models/ghost_1_v7.zip - trained ghost agent #1 (curriculum + adversarial)
+models/ghost_2_v7.zip - trained ghost agent #2 (curriculum + adversarial)
 models/ppo_vecnormalize/vecnormalize.pkl - normalization stats for baseline Pac-Man
 models/mixed_vecnormalize/vecnormalize.pkl - normalization stats for adversarial Pac-Man
 
